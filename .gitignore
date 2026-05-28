@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Price data cache (large binary files, regenerated on first run)
+data/
+
+# Runtime state / caches
+fundamental_cache.json
+tuner_state.json
+state/
+.pytest_cache/
+
+# Generated reports (output files, not source)
+reports/
+
+# Portfolio positions (user-specific live state)
+portfolio/positions.json
+
+# GUI settings (user-specific)
+app_settings.json
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
