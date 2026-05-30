@@ -1,25 +1,20 @@
 #!/usr/bin/env python3
 """
-Mastermind Pro — Desktop Application
-Run this file to launch the GUI: python app.py
+Mastermind Pro — Browser Edition
+Run: streamlit run app.py
+Original Tkinter desktop app preserved as app_tkinter.py
 """
 
-import sys
-import queue
-import threading
-import re
+import contextlib
+import io
 import json
+import re
+import sys
+from datetime import date
 from pathlib import Path
-from datetime import datetime
 
 import pandas as pd
-
-try:
-    import tkinter as tk
-    from tkinter import ttk, messagebox
-except ImportError:
-    print("ERROR: tkinter not found. Reinstall Python and make sure 'tcl/tk' is checked.")
-    sys.exit(1)
+import streamlit as st
 
 ROOT = Path(__file__).parent
 SRC  = ROOT / "src"
@@ -27,1330 +22,759 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 
-# ── ANSI → Tk tag parser ──────────────────────────────────────────────────────
-_ANSI_COLORS = {
-    "90": "muted",
-    "91": "red", "92": "green", "93": "yellow",
-    "94": "blue", "95": "magenta", "96": "cyan", "97": "white",
-}
-_ANSI_RE = re.compile(r"\x1b\[([0-9;]*)m")
+# ── Helpers ────────────────────────────────────────────────────────────────────
+
+def _strip(text: str) -> str:
+    """Remove ANSI colour codes so text renders cleanly in st.code()."""
+    return re.sub(r"\x1b\[[0-9;]*m", "", text)
 
 
-def _parse_ansi(text: str):
-    pos, fg, bold = 0, "", False
-    for m in _ANSI_RE.finditer(text):
-        if m.start() > pos:
-            yield tuple(t for t in [fg, "bold" if bold else ""] if t), text[pos:m.start()]
-        for code in m.group(1).split(";"):
-            if code in ("0", ""):
-                fg, bold = "", False
-            elif code == "1":
-                bold = True
-            elif code in _ANSI_COLORS:
-                fg = _ANSI_COLORS[code]
-        pos = m.end()
-    if pos < len(text):
-        yield tuple(t for t in [fg, "bold" if bold else ""] if t), text[pos:]
+def _capture(fn, *args, **kwargs):
+    """Run fn(*args, **kwargs), capturing all stdout. Returns (result, log)."""
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        result = fn(*args, **kwargs)
+    return result, buf.getvalue()
 
 
-# ── Settings helpers ──────────────────────────────────────────────────────────
-_SETTINGS_FILE = ROOT / "app_settings.json"
-_DEFAULTS = {
-    "account_size":          100_000,
-    "max_positions":         8,
-    "max_per_sector":        8,          # 8/8 = 1.0 → no effective cap for IN (all Unknown sector)
-    "max_high_vol":          4,
-    "max_position_size_pct": 0.24,       # 24% baseline — Run 17 optimised
-    "max_concentration_pct": 0.32,       # 32% ceiling for velocity-scaled leaders
-    "quality_filter":        True,
-    "dynamic_universe":      True,
-    "momentum_exit":         True,
-    "vol_penalty":           False,      # disable vol divisor in momentum ranking
-    "momentum_grace":        7,          # days after entry before momentum exit can fire
-    "momentum_periods":      "14,30,63", # focused momentum periods for early trend detection
-    "top_n_us":              200,        # DYNAMIC_UNIVERSE universe fetch size
-    "top_n_eu":              200,
-    "top_n_in":              250,
-    "rank_top_n_us":         10,         # RANKING bench-list top-N per market
-    "rank_top_n_eu":         10,
-    "rank_top_n_in":         10,
-}
+# ── Page config ────────────────────────────────────────────────────────────────
+
+st.set_page_config(
+    page_title="Mastermind Pro",
+    page_icon="📈",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+st.markdown("""
+<style>
+  /* tighten code blocks */
+  .stCode { font-size: 12px; }
+  /* status boxes */
+  [data-testid="stStatusWidget"] { font-size: 13px; }
+</style>
+""", unsafe_allow_html=True)
 
 
-def _load_settings() -> dict:
-    s = dict(_DEFAULTS)
-    if _SETTINGS_FILE.exists():
+# ── Sidebar ────────────────────────────────────────────────────────────────────
+
+with st.sidebar:
+    st.title("📈 Mastermind Pro")
+    st.caption("ATR-Dynamic + Fundamental System")
+    st.markdown("---")
+
+    st.subheader("Account")
+    equity_s     = st.number_input("Equity",       value=100_000, step=10_000, min_value=1_000)
+    commission_s = st.number_input("Commission %", value=0.10, step=0.01, format="%.2f") / 100
+    slippage_s   = st.number_input("Slippage %",   value=0.10, step=0.01, format="%.2f") / 100
+
+    st.markdown("---")
+    st.subheader("Strategy Flags")
+    dynamic_universe_s = st.toggle("Dynamic Universe", value=True)
+    quality_filter_s   = st.toggle("Quality Filter",   value=True)
+    momentum_exit_s    = st.toggle("Momentum Exit",    value=True)
+
+    st.markdown("---")
+    st.caption("⚠ Research use only. Not financial advice.")
+
+
+# ── Tabs ───────────────────────────────────────────────────────────────────────
+
+T_SCAN, T_BT, T_LTB, T_LTS, T_WF, T_ST, T_MC, T_REP = st.tabs([
+    "📊 Daily Scan",
+    "📈 ST Backtest",
+    "🏦 LT Backtest",
+    "🔭 LT Screener",
+    "🔄 Walk-Forward",
+    "💪 Stress Tests",
+    "🎲 Monte Carlo",
+    "📁 Reports",
+])
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 1 — Daily Scan
+# ══════════════════════════════════════════════════════════════════════════════
+
+with T_SCAN:
+    st.header("Daily Signal Scan")
+    st.caption("5-gate ATR-Dynamic entry engine with NEAR signals and quality scoring.")
+
+    c1, c2, c3 = st.columns([2, 1, 1])
+    with c1:
+        scan_markets = st.multiselect("Markets", ["IN", "US", "EU"], default=["IN"])
+    with c2:
+        scan_asof = st.text_input("As-of date", placeholder="YYYY-MM-DD (blank = today)")
+    with c3:
+        scan_skip_journal = st.checkbox("Skip journal update", value=True)
+
+    if st.button("▶ Run Daily Scan", type="primary", key="btn_scan"):
+        if not scan_markets:
+            st.warning("Select at least one market.")
+            st.stop()
+
+        buf = io.StringIO()
         try:
-            s.update(json.loads(_SETTINGS_FILE.read_text()))
-        except Exception:
-            pass
-    return s
-
-
-def _save_settings(s: dict):
-    _SETTINGS_FILE.write_text(json.dumps(s, indent=2))
-
-
-# ── Thread → UI bridge ────────────────────────────────────────────────────────
-class _QWriter:
-    def __init__(self, q: queue.Queue):
-        self._q = q
-
-    def write(self, text):
-        if text:
-            self._q.put(text)
-
-    def flush(self):
-        pass
-
-
-class _TeeWriter:
-    """Writes to both a _QWriter (GUI) and a StringIO buffer (for saving)."""
-    def __init__(self, qwriter: "_QWriter", buf):
-        self._q   = qwriter
-        self._buf = buf
-
-    def write(self, text):
-        self._q.write(text)
-        self._buf.write(text)
-
-    def flush(self):
-        pass
-
-
-# ── Application ───────────────────────────────────────────────────────────────
-class App(tk.Tk):
-    BG      = "#1e1e2e"
-    BG2     = "#181825"
-    SURFACE = "#313244"
-    TEXT    = "#cdd6f4"
-    MUTED   = "#a6adc8"
-    ACCENT  = "#89b4fa"
-    GREEN   = "#a6e3a1"
-    YELLOW  = "#f9e2af"
-    RED     = "#f38ba8"
-    CYAN    = "#89dceb"
-    MAGENTA = "#cba6f7"
-    WHITE   = "#ffffff"
-
-    def __init__(self):
-        super().__init__()
-        self.title("Mastermind Pro — ATR-Dynamic Multi-Market")
-        self.geometry("1200x820")
-        self.minsize(960, 640)
-        self.configure(bg=self.BG)
-
-        self._settings = _load_settings()
-        self._busy     = False
-        self._q: queue.Queue      = queue.Queue()
-        self._target: tk.Text | None = None
-
-        self._styles()
-        self._layout()
-        self._poll()
-
-    def _styles(self):
-        st = ttk.Style(self)
-        st.theme_use("clam")
-        st.configure("TNotebook", background=self.BG2, borderwidth=0, tabmargins=0)
-        st.configure("TNotebook.Tab",
-                     background=self.SURFACE, foreground=self.MUTED,
-                     padding=[14, 7], font=("Consolas", 10))
-        st.map("TNotebook.Tab",
-               background=[("selected", self.BG)],
-               foreground=[("selected", self.ACCENT)])
-        for orient in ("Vertical", "Horizontal"):
-            st.configure(f"{orient}.TScrollbar",
-                         background=self.SURFACE, troughcolor=self.BG2,
-                         arrowcolor=self.MUTED, borderwidth=0, relief="flat")
-        st.configure("TCombobox",
-                     fieldbackground=self.SURFACE, background=self.SURFACE,
-                     foreground=self.TEXT, arrowcolor=self.ACCENT, borderwidth=0)
-        st.map("TCombobox",
-               fieldbackground=[("readonly", self.SURFACE)],
-               foreground=[("readonly", self.TEXT)])
-
-    def _layout(self):
-        hdr = tk.Frame(self, bg=self.BG2, pady=10)
-        hdr.pack(fill="x")
-        tk.Label(hdr, text="MASTERMIND PRO",
-                 bg=self.BG2, fg=self.ACCENT,
-                 font=("Consolas", 17, "bold"), padx=20).pack(side="left")
-        tk.Label(hdr, text="ATR-Dynamic Multi-Market Signal System",
-                 bg=self.BG2, fg=self.MUTED,
-                 font=("Consolas", 10)).pack(side="left")
-
-        nb = ttk.Notebook(self)
-        nb.pack(fill="both", expand=True)
-
-        tabs = [
-            ("daily",       "  Daily Scan  ",     self._tab_daily),
-            ("universe",    "  Universe  ",        self._tab_universe),
-            ("posttrade",   "  Post-Trade  ",      self._tab_posttrade),
-            ("backtest",    "  Backtest  ",        self._tab_backtest),
-            ("longterm",    "  Long-Term  ",       self._tab_longterm),
-            ("reports",     "  Reports  ",         self._tab_reports),
-            ("replacement", "  Bench List  ",      self._tab_replacement),
-            ("settings",    "  Settings  ",        self._tab_settings),
-        ]
-        for key, label, builder in tabs:
-            f = tk.Frame(nb, bg=self.BG)
-            nb.add(f, text=label)
-            builder(f)
-
-        self._status = tk.StringVar(value="Ready — select a tab to get started.")
-        tk.Label(self, textvariable=self._status,
-                 bg=self.BG2, fg=self.MUTED,
-                 font=("Consolas", 9), anchor="w", padx=12, pady=4
-                 ).pack(fill="x", side="bottom")
-
-    # ──────────────────────────────── TABS ───────────────────────────────────
-
-    def _tab_daily(self, parent):
-        bar = tk.Frame(parent, bg=self.BG, padx=14, pady=12)
-        bar.pack(fill="x")
-
-        tk.Label(bar, text="Account:", bg=self.BG, fg=self.MUTED,
-                 font=("Consolas", 10)).pack(side="left")
-        self._acct_lbl = tk.Label(
-            bar, text=f"€{self._settings['account_size']:,.0f}",
-            bg=self.BG, fg=self.ACCENT, font=("Consolas", 10, "bold"))
-        self._acct_lbl.pack(side="left", padx=(4, 20))
-
-        self._daily_markets = self._combo(bar, "Markets:",
-                                          ["US,EU,IN", "US", "EU", "IN", "US,EU", "US,IN"],
-                                          "US,EU,IN", 10)
-
-        # As-of date: default today; past date → historical simulation (no lookahead)
-        self._daily_asof = self._entry(bar, "As of:",
-                                       datetime.now().strftime("%Y-%m-%d"), 12)
-
-        # Quality filter checkbox
-        self._daily_qf = tk.BooleanVar(value=self._settings.get("quality_filter", True))
-        tk.Checkbutton(bar, text="Quality filter", variable=self._daily_qf,
-                       bg=self.BG, fg=self.MUTED, selectcolor=self.SURFACE,
-                       activebackground=self.BG, activeforeground=self.ACCENT,
-                       font=("Consolas", 9)).pack(side="left", padx=(0, 8))
-
-        self._daily_btn = self._button(bar, "▶  Run Daily Scan", self._run_daily)
-        self._daily_btn.pack(side="left")
-        self._button(bar, "Clear", lambda: self._clear(self._daily_out), w=6
-                     ).pack(side="left", padx=(8, 0))
-
-        self._daily_out = self._terminal(parent)
-
-    def _tab_universe(self, parent):
-        bar = tk.Frame(parent, bg=self.BG, padx=14, pady=12)
-        bar.pack(fill="x")
-
-        tk.Label(bar,
-                 text="Score all tickers by momentum velocity, SMA50 trend distance, and composite grade.",
-                 bg=self.BG, fg=self.MUTED, font=("Consolas", 9)
-                 ).pack(side="left")
-
-        self._univ_btn = self._button(bar, "▶  Score Universe", self._run_universe)
-        self._univ_btn.pack(side="right")
-        self._button(bar, "Clear", lambda: self._clear(self._univ_out), w=6
-                     ).pack(side="right", padx=(0, 8))
-
-        self._univ_out = self._terminal(parent)
-
-    def _tab_posttrade(self, parent):
-        bar = tk.Frame(parent, bg=self.BG, padx=14, pady=12)
-        bar.pack(fill="x")
-
-        tk.Label(bar,
-                 text="Enrich today's WAIT/ENTER/NEAR journal rows with sizing, "
-                      "market-behaviour and Tier 3 reflection.",
-                 bg=self.BG, fg=self.MUTED, font=("Consolas", 9)
-                 ).pack(side="left")
-
-        self._pt_btn = self._button(bar, "▶  Run Post-Trade Analysis", self._run_posttrade)
-        self._pt_btn.pack(side="right")
-        self._button(bar, "Clear", lambda: self._clear(self._pt_out), w=6
-                     ).pack(side="right", padx=(0, 8))
-
-        self._pt_out = self._terminal(parent)
-
-    def _tab_backtest(self, parent):
-        bar = tk.Frame(parent, bg=self.BG, padx=14, pady=12)
-        bar.pack(fill="x")
-
-        today_str = datetime.now().strftime("%Y-%m-%d")
-
-        self._bt_market = self._combo(bar, "Market:", ["US", "EU", "IN", "ALL"], "ALL", 6)
-        self._bt_start  = self._entry(bar, "Start:",  "2021-01-01", 12)
-        self._bt_end    = self._entry(bar, "End:",    today_str,    12)
-
-        # Years label — auto-calculated; read-only display
-        tk.Label(bar, text="Years:", bg=self.BG, fg=self.MUTED,
-                 font=("Consolas", 10)).pack(side="left")
-        self._bt_years_lbl = tk.Label(bar, text="—", bg=self.BG, fg=self.ACCENT,
-                                      font=("Consolas", 10, "bold"), width=5, anchor="w")
-        self._bt_years_lbl.pack(side="left", padx=(4, 16))
-
-        # Trace start/end to auto-update the years label
-        def _update_years(*_):
-            try:
-                s = pd.Timestamp(self._bt_start.get())
-                e_raw = self._bt_end.get().strip()
-                e = pd.Timestamp(e_raw) if e_raw else pd.Timestamp.today()
-                yrs = max(0.0, (e - s).days / 365.25)
-                self._bt_years_lbl.configure(text=f"{yrs:.1f}y")
-            except Exception:
-                self._bt_years_lbl.configure(text="—")
-
-        self._bt_start.trace_add("write", _update_years)
-        self._bt_end.trace_add("write",   _update_years)
-        _update_years()
-
-        self._bt_btn = self._button(bar, "▶  Run Backtest", self._run_backtest)
-        self._bt_btn.pack(side="left", padx=(8, 0))
-        self._button(bar, "Clear", lambda: self._clear(self._bt_out), w=6
-                     ).pack(side="left", padx=(8, 0))
-
-        self._bt_out = self._terminal(parent)
-
-    def _tab_reports(self, parent):
-        pane = tk.PanedWindow(parent, orient="horizontal",
-                              bg=self.BG2, sashwidth=3)
-        pane.pack(fill="both", expand=True)
-
-        left = tk.Frame(pane, bg=self.BG2, width=220)
-        pane.add(left, minsize=180)
-
-        tk.Label(left, text="Saved Reports",
-                 bg=self.BG2, fg=self.ACCENT,
-                 font=("Consolas", 10, "bold"),
-                 padx=8, pady=8).pack(anchor="w")
-        self._button(left, "↻  Refresh", self._refresh_reports
-                     ).pack(padx=8, pady=(0, 6), anchor="w")
-
-        self._rpt_lb = tk.Listbox(
-            left, bg=self.BG, fg=self.TEXT, font=("Consolas", 9),
-            selectbackground=self.SURFACE, selectforeground=self.ACCENT,
-            relief="flat", bd=0, activestyle="none", highlightthickness=0)
-        self._rpt_lb.pack(fill="both", expand=True, padx=2)
-        self._rpt_lb.bind("<<ListboxSelect>>", self._view_report)
-
-        right = tk.Frame(pane, bg=self.BG)
-        pane.add(right, minsize=440)
-        self._rpt_out = self._terminal(right)
-        self._refresh_reports()
-
-    def _tab_replacement(self, parent):
-        bar = tk.Frame(parent, bg=self.BG, padx=14, pady=12)
-        bar.pack(fill="x")
-
-        self._repl_market = self._combo(bar, "Market:", ["ALL", "US", "EU", "IN"], "ALL", 6)
-        self._repl_topn   = self._entry(bar, "Top N:", "20", 5)
-
-        self._repl_qf = tk.BooleanVar(value=self._settings.get("quality_filter", True))
-        tk.Checkbutton(bar, text="Quality sort", variable=self._repl_qf,
-                       bg=self.BG, fg=self.MUTED, selectcolor=self.SURFACE,
-                       activebackground=self.BG, activeforeground=self.ACCENT,
-                       font=("Consolas", 9)).pack(side="left", padx=(0, 8))
-
-        self._repl_btn = self._button(bar, "▶  Build Bench List", self._run_replacement)
-        self._repl_btn.pack(side="left", padx=(8, 0))
-        self._button(bar, "Clear", lambda: self._clear(self._repl_out), w=6
-                     ).pack(side="left", padx=(8, 0))
-
-        self._repl_out = self._terminal(parent)
-
-    def _tab_longterm(self, parent):
-        bar = tk.Frame(parent, bg=self.BG, padx=14, pady=12)
-        bar.pack(fill="x")
-
-        self._lt_markets = self._combo(bar, "Markets:",
-                                       ["IN", "US,EU,IN", "US", "EU", "US,IN"], "IN", 10)
-        self._lt_minq    = self._entry(bar, "Min-Q:", "55", 4)
-        self._lt_topn    = self._entry(bar, "Top-N IN:", "250", 5)
-
-        self._lt_near = tk.BooleanVar(value=True)
-        tk.Checkbutton(bar, text="Include NEAR", variable=self._lt_near,
-                       bg=self.BG, fg=self.MUTED, selectcolor=self.SURFACE,
-                       activebackground=self.BG, activeforeground=self.ACCENT,
-                       font=("Consolas", 9)).pack(side="left", padx=(0, 8))
-
-        self._lt_refresh = tk.BooleanVar(value=False)
-        tk.Checkbutton(bar, text="Refresh cache", variable=self._lt_refresh,
-                       bg=self.BG, fg=self.MUTED, selectcolor=self.SURFACE,
-                       activebackground=self.BG, activeforeground=self.ACCENT,
-                       font=("Consolas", 9)).pack(side="left", padx=(0, 16))
-
-        self._lt_btn = self._button(bar, "▶  Run Long-Term Screen", self._run_longterm)
-        self._lt_btn.pack(side="left")
-        self._button(bar, "Clear", lambda: self._clear(self._lt_out), w=6
-                     ).pack(side="left", padx=(8, 0))
-
-        tk.Label(parent,
-                 text="  Technical gates + Q-score pre-screen  ->  Fundamental scoring"
-                      " (ROE, growth, D/E, FCF)  ->  Tiered report + Exit Watch per stock",
-                 bg=self.BG, fg=self.MUTED, font=("Consolas", 9), anchor="w"
-                 ).pack(fill="x", padx=14, pady=(0, 2))
-
-        # ── Backtest control bar ──────────────────────────────────────────────
-        sep = tk.Frame(parent, bg=self.SURFACE, height=1)
-        sep.pack(fill="x", padx=14, pady=(4, 0))
-
-        bar2 = tk.Frame(parent, bg=self.BG, padx=14, pady=10)
-        bar2.pack(fill="x")
-
-        tk.Label(bar2, text="Backtest:", bg=self.BG, fg=self.ACCENT,
-                 font=("Consolas", 10, "bold")).pack(side="left", padx=(0, 10))
-
-        today_str = datetime.now().strftime("%Y-%m-%d")
-        self._ltbt_market = self._combo(bar2, "Market:", ["IN", "US", "EU"], "IN", 5)
-        self._ltbt_start  = self._entry(bar2, "Start:", "2015-01-01", 12)
-        self._ltbt_end    = self._entry(bar2, "End:", today_str, 12)
-        self._ltbt_slots  = self._entry(bar2, "Slots:", "10", 4)
-        self._ltbt_reb    = self._combo(bar2, "Rebalance:",
-                                        ["21  (Monthly)", "63  (Quarterly)",
-                                         "126 (Semi-Annual)", "252 (Annual)"],
-                                        "63  (Quarterly)", 16)
-
-        self._ltbt_mfloor = self._entry(bar2, "Mom.floor%:", "-5", 4)
-
-        self._ltbt_breakdown = tk.BooleanVar(value=True)
-        tk.Checkbutton(bar2, text="Breakdown exit", variable=self._ltbt_breakdown,
-                       bg=self.BG, fg=self.MUTED, selectcolor=self.SURFACE,
-                       activebackground=self.BG, activeforeground=self.ACCENT,
-                       font=("Consolas", 9)).pack(side="left", padx=(0, 12))
-
-        self._ltbt_btn = self._button(bar2, "▶  Run LT Backtest", self._run_lt_backtest)
-        self._ltbt_btn.pack(side="left")
-        self._button(bar2, "Clear", lambda: self._clear(self._lt_out), w=6
-                     ).pack(side="left", padx=(8, 0))
-
-        tk.Label(parent,
-                 text="  Rebalance = rotate out of laggards.  Breakdown exit = sell on SMA_50 < SMA_200."
-                      "  Mom.floor% = exit-watch signal: sell if avg momentum < N% (e.g. -5).  -99 = off.",
-                 bg=self.BG, fg=self.MUTED, font=("Consolas", 9), anchor="w",
-                 ).pack(fill="x", padx=14, pady=(0, 4))
-
-        self._lt_out = self._terminal(parent)
-
-    def _tab_settings(self, parent):
-        canvas = tk.Canvas(parent, bg=self.BG, highlightthickness=0)
-        vsb    = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
-        canvas.configure(yscrollcommand=vsb.set)
-        vsb.pack(side="right", fill="y")
-        canvas.pack(side="left", fill="both", expand=True)
-
-        f = tk.Frame(canvas, bg=self.BG, padx=36, pady=28)
-        win = canvas.create_window((0, 0), window=f, anchor="nw")
-
-        def _resize(event):
-            canvas.itemconfig(win, width=event.width)
-        canvas.bind("<Configure>", _resize)
-        f.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-
-        tk.Label(f, text="Account & Risk Settings",
-                 bg=self.BG, fg=self.ACCENT,
-                 font=("Consolas", 13, "bold")
-                 ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 18))
-
-        self._sv: dict[str, tk.StringVar] = {}
-        self._bv: dict[str, tk.BooleanVar] = {}
-
-        numeric_rows = [
-            ("Account Size:",                    "account_size"),
-            ("Max Open Positions:",              "max_positions"),
-            ("Entry Size Cap (0–1 fraction):",      "max_position_size_pct"),
-            ("Max Concentration Cap (0–1 frac):", "max_concentration_pct"),
-            ("Max Per Sector (slots):",          "max_per_sector"),
-            ("Max High-Vol Per Market:",         "max_high_vol"),
-            ("Momentum Exit Grace (days):",      "momentum_grace"),
-            ("Momentum Periods (csv):",          "momentum_periods"),
-            ("Top-N US (universe fetch):",       "top_n_us"),
-            ("Top-N EU (universe fetch):",       "top_n_eu"),
-            ("Top-N IN (universe fetch):",       "top_n_in"),
-            ("Ranking Top-N US:",                "rank_top_n_us"),
-            ("Ranking Top-N EU:",                "rank_top_n_eu"),
-            ("Ranking Top-N IN:",                "rank_top_n_in"),
-        ]
-        for i, (lbl, key) in enumerate(numeric_rows, 1):
-            tk.Label(f, text=lbl, bg=self.BG, fg=self.TEXT,
-                     font=("Consolas", 10), anchor="e"
-                     ).grid(row=i, column=0, sticky="e", padx=(0, 12), pady=5)
-            sv = tk.StringVar(value=str(self._settings.get(key, 0)))
-            tk.Entry(f, textvariable=sv, width=14,
-                     bg=self.SURFACE, fg=self.TEXT, font=("Consolas", 10),
-                     insertbackground=self.TEXT, relief="flat", bd=6
-                     ).grid(row=i, column=1, sticky="w", pady=5)
-            self._sv[key] = sv
-
-        n = len(numeric_rows)
-
-        # Boolean toggles
-        bool_rows = [
-            ("Enable quality filter:",    "quality_filter"),
-            ("Enable dynamic universe:",  "dynamic_universe"),
-            ("Enable momentum exit:",     "momentum_exit"),
-            ("Volatility penalty:",       "vol_penalty"),
-        ]
-        for j, (lbl, key) in enumerate(bool_rows):
-            tk.Label(f, text=lbl, bg=self.BG, fg=self.TEXT,
-                     font=("Consolas", 10), anchor="e"
-                     ).grid(row=n + 1 + j, column=0, sticky="e", padx=(0, 12), pady=5)
-            bv = tk.BooleanVar(value=bool(self._settings.get(key, False)))
-            tk.Checkbutton(f, variable=bv,
-                           bg=self.BG, fg=self.TEXT, selectcolor=self.SURFACE,
-                           activebackground=self.BG, activeforeground=self.ACCENT
-                           ).grid(row=n + 1 + j, column=1, sticky="w", pady=5)
-            self._bv[key] = bv
-
-        save_row = n + 1 + len(bool_rows)
-        self._button(f, "Save Settings", self._save_settings
-                     ).grid(row=save_row, column=1, sticky="w", pady=16)
-
-        tk.Label(f, text="To add/remove stocks edit  src/config.py  directly.",
-                 bg=self.BG, fg=self.YELLOW, font=("Consolas", 9)
-                 ).grid(row=save_row + 1, column=0, columnspan=2, sticky="w")
-
-        tk.Label(f, text="Watchlist Preview:",
-                 bg=self.BG, fg=self.ACCENT, font=("Consolas", 10, "bold")
-                 ).grid(row=save_row + 2, column=0, columnspan=2, sticky="w", pady=(20, 6))
-
-        wl = tk.Text(f, height=18, width=72, bg=self.SURFACE, fg=self.TEXT,
-                     font=("Consolas", 9), relief="flat", state="disabled",
-                     wrap="none", highlightthickness=0)
-        wl.grid(row=save_row + 3, column=0, columnspan=2, sticky="ew")
-        self._fill_watchlist(wl)
-
-    # ─────────────────────── Widget helpers ──────────────────────────────────
-
-    def _terminal(self, parent) -> tk.Text:
-        outer = tk.Frame(parent, bg=self.BG, padx=8, pady=6)
-        outer.pack(fill="both", expand=True)
-        inner = tk.Frame(outer, bg=self.BG2)
-        inner.pack(fill="both", expand=True)
-
-        w = tk.Text(inner, bg=self.BG2, fg=self.TEXT, font=("Consolas", 10),
-                    wrap="none", relief="flat", bd=0, state="disabled",
-                    insertbackground=self.TEXT, highlightthickness=0)
-        vsb = ttk.Scrollbar(inner, orient="vertical",   command=w.yview)
-        hsb = ttk.Scrollbar(inner, orient="horizontal", command=w.xview)
-        w.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
-        vsb.grid(row=0, column=1, sticky="ns")
-        hsb.grid(row=1, column=0, sticky="ew")
-        w.grid(row=0, column=0, sticky="nsew")
-        inner.rowconfigure(0, weight=1)
-        inner.columnconfigure(0, weight=1)
-
-        w.tag_configure("muted",   foreground=self.MUTED)
-        w.tag_configure("green",   foreground=self.GREEN)
-        w.tag_configure("red",     foreground=self.RED)
-        w.tag_configure("yellow",  foreground=self.YELLOW)
-        w.tag_configure("blue",    foreground=self.ACCENT)
-        w.tag_configure("cyan",    foreground=self.CYAN)
-        w.tag_configure("magenta", foreground=self.MAGENTA)
-        w.tag_configure("white",   foreground=self.WHITE)
-        w.tag_configure("bold",    font=("Consolas", 10, "bold"))
-        return w
-
-    def _button(self, parent, text, cmd, w=None) -> tk.Button:
-        kw = dict(text=text, command=cmd,
-                  bg=self.SURFACE, fg=self.ACCENT,
-                  activebackground=self.BG2, activeforeground=self.ACCENT,
-                  font=("Consolas", 10), relief="flat", bd=0,
-                  padx=12, pady=5, cursor="hand2")
-        if w:
-            kw["width"] = w
-        b = tk.Button(parent, **kw)
-        b.bind("<Enter>", lambda _: b.configure(bg=self.BG2))
-        b.bind("<Leave>", lambda _: b.configure(bg=self.SURFACE))
-        return b
-
-    def _combo(self, parent, label, values, default, width) -> tk.StringVar:
-        tk.Label(parent, text=label, bg=self.BG, fg=self.MUTED,
-                 font=("Consolas", 10)).pack(side="left")
-        sv = tk.StringVar(value=default)
-        ttk.Combobox(parent, textvariable=sv, values=values,
-                     width=width, state="readonly", font=("Consolas", 10)
-                     ).pack(side="left", padx=(4, 16))
-        return sv
-
-    def _entry(self, parent, label, default, width) -> tk.StringVar:
-        tk.Label(parent, text=label, bg=self.BG, fg=self.MUTED,
-                 font=("Consolas", 10)).pack(side="left")
-        sv = tk.StringVar(value=default)
-        tk.Entry(parent, textvariable=sv, width=width,
-                 bg=self.SURFACE, fg=self.TEXT, font=("Consolas", 10),
-                 insertbackground=self.TEXT, relief="flat", bd=4
-                 ).pack(side="left", padx=(4, 16))
-        return sv
-
-    # ─────────────────────── Output helpers ──────────────────────────────────
-
-    def _write(self, widget: tk.Text, text: str):
-        widget.configure(state="normal")
-        for tags, seg in _parse_ansi(text):
-            widget.insert("end", seg, tags)
-        widget.see("end")
-        widget.configure(state="disabled")
-
-    def _clear(self, widget: tk.Text):
-        widget.configure(state="normal")
-        widget.delete("1.0", "end")
-        widget.configure(state="disabled")
-
-    def _poll(self):
-        try:
-            while True:
-                chunk = self._q.get_nowait()
-                if self._target:
-                    self._write(self._target, chunk)
-        except queue.Empty:
-            pass
-        self.after(40, self._poll)
-
-    def _check_busy(self) -> bool:
-        if self._busy:
-            messagebox.showinfo("Busy", "A task is already running. Please wait.")
-            return True
-        return False
-
-    # ─────────────────────────── Actions ─────────────────────────────────────
-
-    def _run_daily(self):
-        if self._check_busy():
-            return
-
-        asof_raw = self._daily_asof.get().strip()
-        try:
-            asof_dt = pd.Timestamp(asof_raw).normalize() if asof_raw else pd.Timestamp.today().normalize()
-        except Exception:
-            messagebox.showerror("Invalid date",
-                                 f"As-of date '{asof_raw}' is not a valid YYYY-MM-DD date.")
-            return
-
-        self._clear(self._daily_out)
-        self._target = self._daily_out
-        self._busy   = True
-        self._daily_btn.configure(state="disabled", text="Running…")
-        self._status.set("Running daily scan…")
-        markets    = self._daily_markets.get()
-        use_qf     = self._daily_qf.get()
-        use_dyn    = self._settings.get("dynamic_universe", False)
-        top_n_map  = {
-            "US": self._settings.get("top_n_us", 200),
-            "EU": self._settings.get("top_n_eu", 200),
-            "IN": self._settings.get("top_n_in", 250),
-        }
-        threading.Thread(
-            target=self._worker_daily,
-            args=(markets, use_qf, use_dyn, top_n_map, asof_dt),
-            daemon=True,
-        ).start()
-
-    def _apply_settings_to_config(self) -> None:
-        """Patch config module in-process so all workers use GUI values, not hardcoded defaults."""
-        import config as cfg
-        s = self._settings
-        max_pos  = int(s.get("max_positions", 8))
-        max_sec  = int(s.get("max_per_sector", 8))
-        max_hv   = int(s.get("max_high_vol", 4))
-        sec_frac = round(max_sec / max_pos, 4) if max_pos > 0 else 0.55
-
-        cfg.RISK["MAX_OPEN_POSITIONS"]      = max_pos
-        cfg.RISK["MAX_PER_SECTOR"]          = {"US": sec_frac, "EU": sec_frac, "IN": sec_frac}
-        cfg.RISK["MAX_HIGH_VOL_PER_MARKET"] = {"US": max_hv,   "EU": max_hv,   "IN": max_hv}
-        cfg.MAX_OPEN_POSITIONS              = max_pos
-        cfg.MAX_PER_SECTOR                  = sec_frac
-        cfg.ACCOUNT["equity"]               = float(s.get("account_size", 100_000))
-
-        cfg.RANKING["DEFAULT_TOP_N"] = {
-            "US": int(s.get("rank_top_n_us", 10)),
-            "EU": int(s.get("rank_top_n_eu", 10)),
-            "IN": int(s.get("rank_top_n_in", 10)),
-        }
-        cfg.RANKING["VOLATILITY_PENALTY"] = bool(s.get("vol_penalty", False))
-
-        raw_periods = str(s.get("momentum_periods", "14,30,63"))
-        try:
-            periods = [int(p.strip()) for p in raw_periods.split(",") if p.strip()]
-            if periods:
-                cfg.RANKING["MOMENTUM_PERIODS"] = periods
-        except ValueError:
-            pass
-
-        cfg.MOMENTUM_EXIT["ENABLED"]    = bool(s.get("momentum_exit", True))
-        cfg.MOMENTUM_EXIT["GRACE_DAYS"] = int(s.get("momentum_grace", 7))
-
-        pos_size_pct = float(s.get("max_position_size_pct", 0.24))
-        cfg.ACCOUNT["max_position_size"]       = pos_size_pct
-        cfg.RISK["MAX_POSITION_SIZE_PCT"]      = pos_size_pct
-        cfg.RISK["MAX_TOTAL_CONCENTRATION_PCT"] = float(s.get("max_concentration_pct", 0.32))
-
-        cfg.DYNAMIC_UNIVERSE["SCORE_TOP_N"] = {
-            "US": int(s.get("top_n_us", 200)),
-            "EU": int(s.get("top_n_eu", 200)),
-            "IN": int(s.get("top_n_in", 250)),
-        }
-
-    def _worker_daily(self, markets: str, use_qf: bool, use_dyn: bool, top_n_map: dict,
-                      asof_dt=None):
-        import contextlib
-        import pandas as pd
-        w = _QWriter(self._q)
-        self._apply_settings_to_config()
-        try:
-            from config import WATCHLIST, WATCHLIST_FLAT, MARKETS, QUALITY_FILTER, DYNAMIC_UNIVERSE
+            from config import (WATCHLIST, WATCHLIST_FLAT, MARKETS, ACCOUNT,
+                                QUALITY_FILTER, DYNAMIC_UNIVERSE)
             from data import fetch_all
             from indicators import calculate_all
             from adaptive_tuner import AdaptiveTuner
             from decision_engine import DecisionEngine
-            from report import daily_report, portfolio_review_report
-            from journal import update_journal
-            import json
-            from pathlib import Path
+            from report import daily_report
 
-            today = (asof_dt if asof_dt is not None
-                     else pd.Timestamp.today().normalize())
+            PORTFOLIO_FILE = ROOT / "portfolio" / "positions.json"
+            TUNER_FILE     = ROOT / "tuner_state.json"
+            STATE_FILE     = ROOT / "state" / "last_decisions.json"
 
-            acct       = self._settings["account_size"]
-            root       = Path(__file__).parent
-            tuner_path = root / "tuner_state.json"
-            port_path  = root / "portfolio" / "positions.json"
+            with st.status("Running daily scan…", expanded=True) as status:
 
-            active_markets = [m.strip().upper() for m in markets.split(",")]
+                st.write("⚙ Building universe…")
+                with contextlib.redirect_stdout(buf):
+                    if dynamic_universe_s:
+                        from universe import get_dynamic_watchlist
+                        score_top_n = DYNAMIC_UNIVERSE["SCORE_TOP_N"]
+                        active_wl = get_dynamic_watchlist(
+                            scan_markets, score_top_n,
+                            max_age_days=DYNAMIC_UNIVERSE.get("MAX_AGE_DAYS", 7))
+                    else:
+                        active_wl = {m: WATCHLIST[m] for m in scan_markets if m in WATCHLIST}
 
-            with contextlib.redirect_stdout(w), contextlib.redirect_stderr(w):
-                is_historical = today.date() < pd.Timestamp.today().normalize().date()
-                date_note     = f" [historical as-of {today.date()}]" if is_historical else ""
-                w.write(f"\n[1/5] Fetching EOD data ({markets}){date_note}...\n")
+                st.write("📥 Fetching price data…")
+                with contextlib.redirect_stdout(buf):
+                    raw_data = fetch_all(active_wl, years=3)
 
-                # Build full universe first (before fetching data)
-                if use_dyn:
-                    from universe import get_dynamic_watchlist
-                    score_top_n = {
-                        m: (top_n_map.get(m) or DYNAMIC_UNIVERSE["SCORE_TOP_N"].get(m, 200))
-                        for m in active_markets
-                    }
-                    w.write(f"  [universe] Downloading index constituents"
-                            f" (US={score_top_n.get('US','--')},"
-                            f" EU={score_top_n.get('EU','--')},"
-                            f" IN={score_top_n.get('IN','--')})...\n")
-                    active_wl = get_dynamic_watchlist(
-                        active_markets, score_top_n,
-                        max_age_days=DYNAMIC_UNIVERSE.get("MAX_AGE_DAYS", 7),
+                st.write(f"⚙ Calculating indicators for {len(raw_data)} tickers…")
+                with contextlib.redirect_stdout(buf):
+                    data_map = {t: calculate_all(df) for t, df in raw_data.items()}
+
+                    if dynamic_universe_s:
+                        from select_stocks import dynamic_watchlist as _dyn_wl
+                        active_wl = _dyn_wl(data_map, DYNAMIC_UNIVERSE["SCORE_TOP_N"],
+                                             watchlist=active_wl)
+
+                # Quality scoring
+                quality_scores, quality_filtered = {}, []
+                if quality_filter_s:
+                    st.write("🔎 Quality scoring universe…")
+                    with contextlib.redirect_stdout(buf):
+                        from select_stocks import quality_score_all, filter_by_quality
+                        quality_scores = quality_score_all(data_map)
+                        all_tickers = [t for tl in active_wl.values() for t in tl]
+                        _, quality_filtered = filter_by_quality(
+                            all_tickers, quality_scores,
+                            min_score=QUALITY_FILTER.get("MIN_SCORE", 35))
+
+                st.write("🤖 Running DecisionEngine…")
+                with contextlib.redirect_stdout(buf):
+                    portfolio_data = []
+                    if PORTFOLIO_FILE.exists():
+                        try:
+                            portfolio_data = json.loads(PORTFOLIO_FILE.read_text())
+                        except Exception:
+                            pass
+
+                    tuner  = AdaptiveTuner.load(str(TUNER_FILE))
+                    engine = DecisionEngine(tuner=tuner)
+
+                    today_ts = (pd.Timestamp(scan_asof.strip()).normalize()
+                                if scan_asof.strip()
+                                else pd.Timestamp.today().normalize())
+
+                    result = engine.run_day(
+                        today=today_ts,
+                        data_map=data_map,
+                        portfolio=portfolio_data,
+                        equity=equity_s,
+                        context="live",
+                        watchlist=active_wl,
+                        quality_scores=quality_scores if quality_filter_s else None,
                     )
-                else:
-                    active_wl = {m: t for m, t in WATCHLIST.items() if m in active_markets}
 
-                raw_data = fetch_all(active_wl, years=3)
+                st.write("📝 Generating report…")
+                with contextlib.redirect_stdout(buf):
+                    candidates = list(result["candidates"].values())
+                    for c in candidates:
+                        sz = result["sizing"].get(c["ticker"])
+                        if sz:
+                            c["sizing"] = sz
 
-                w.write(f"\n[2/5] Calculating indicators for {len(raw_data)} tickers...\n")
-                data_map_full = {t: calculate_all(df) for t, df in raw_data.items()}
-
-                # Enforce as-of date: slice data to simulate "no lookahead"
-                data_map = {
-                    t: df[df.index <= today]
-                    for t, df in data_map_full.items()
-                    if not df[df.index <= today].empty
-                }
-
-                # Rank full dynamic universe down to top-N per market
-                if use_dyn:
-                    from select_stocks import dynamic_watchlist
-                    w.write("  [dynamic] Ranking universe by momentum + quality...\n")
-                    active_wl = dynamic_watchlist(data_map, top_n_map, watchlist=active_wl)
-                    total_sel = sum(len(v) for v in active_wl.values())
-                    w.write(f"  [dynamic] Selected {total_sel} tickers after ranking\n")
-
-                quality_scores: dict = {}
-                quality_filtered: list = []
-                if use_qf:
-                    from select_stocks import quality_score_all, filter_by_quality
-                    w.write("  [quality] Scoring universe...\n")
-                    quality_scores = quality_score_all(data_map)
-                    min_score = QUALITY_FILTER.get("MIN_SCORE", 35)
-                    all_tickers_q = [t for tl in active_wl.values() for t in tl]
-                    _, quality_filtered = filter_by_quality(all_tickers_q, quality_scores, min_score=min_score)
-                    if quality_filtered:
-                        w.write(f"  [quality] {len(quality_filtered)} Drag stocks filtered out\n")
-
-                w.write("\n[3/5] Running DecisionEngine.run_day()...\n")
-                portfolio = []
-                if port_path.exists():
-                    try:
-                        portfolio = json.loads(port_path.read_text())
-                    except Exception:
-                        pass
-
-                tuner  = AdaptiveTuner.load(str(tuner_path))
-                engine = DecisionEngine(tuner=tuner)
-
-                result = engine.run_day(
-                    today=today,
-                    data_map=data_map,
-                    portfolio=portfolio,
-                    equity=acct,
-                    context="live",
-                    watchlist=active_wl,
-                    quality_scores=quality_scores if use_qf else None,
-                )
-
-                w.write("\n[4/5] Generating report...\n")
-                candidates = list(result["candidates"].values())
-                for c in candidates:
-                    sz = result["sizing"].get(c["ticker"])
-                    if sz:
-                        c["sizing"] = sz
-
-                daily_report(
-                    decisions=candidates,
-                    account_eur=acct,
-                    watchlist=active_wl,
-                    markets=MARKETS,
-                    tuner_mode=result["tuner_mode"],
-                    risk_scale=result["risk_scale"],
-                    quality_filtered=result.get("quality_filtered", quality_filtered),
-                    quality_scores=result.get("quality_scores", quality_scores),
-                )
-                portfolio_review_report(result, acct)
-
-                w.write("\n[5/5] Updating journal...\n")
-                status = update_journal(candidates, WATCHLIST_FLAT, MARKETS)
-                w.write(status + "\n")
-
-                tuner.save(str(tuner_path))
-
-        except Exception as exc:
-            import traceback
-            w.write(f"\n\033[91mError: {exc}\033[0m\n{traceback.format_exc()}")
-        finally:
-            self._busy = False
-            self.after(0, lambda: self._daily_btn.configure(
-                state="normal", text="▶  Run Daily Scan"))
-            self.after(0, lambda: self._status.set(
-                f"Daily scan complete — {datetime.now().strftime('%H:%M:%S')}"))
-
-    def _run_universe(self):
-        if self._check_busy():
-            return
-        self._clear(self._univ_out)
-        self._target = self._univ_out
-        self._busy   = True
-        self._univ_btn.configure(state="disabled", text="Running…")
-        self._status.set("Scoring universe…")
-        threading.Thread(target=self._worker_universe, daemon=True).start()
-
-    def _worker_universe(self):
-        import contextlib
-        w = _QWriter(self._q)
-        self._apply_settings_to_config()
-        try:
-            from config import WATCHLIST, MARKETS, DYNAMIC_UNIVERSE
-            from data import fetch_all
-            from indicators import calculate_all
-            from stock_selector import score_all
-            from report import quality_report
-
-            use_dyn = self._settings.get("dynamic_universe", DYNAMIC_UNIVERSE.get("ENABLED", False))
-            step    = [0]  # mutable counter shared across branches
-
-            def _step(msg: str):
-                step[0] += 1
-                w.write(f"\n[{step[0]}] {msg}\n")
-
-            with contextlib.redirect_stdout(w), contextlib.redirect_stderr(w):
-                if use_dyn:
-                    from universe import get_dynamic_watchlist
-                    score_top_n = DYNAMIC_UNIVERSE.get("SCORE_TOP_N", {})
-                    _step(f"Building dynamic universe "
-                          f"(US={score_top_n.get('US','--')}, "
-                          f"EU={score_top_n.get('EU','--')}, "
-                          f"IN={score_top_n.get('IN','--')})...")
-                    active_wl = get_dynamic_watchlist(
-                        None, score_top_n,
-                        max_age_days=DYNAMIC_UNIVERSE.get("MAX_AGE_DAYS", 7),
+                    report_text = daily_report(
+                        decisions=candidates,
+                        account_eur=equity_s,
+                        watchlist=active_wl,
+                        markets=MARKETS,
+                        tuner_mode=result["tuner_mode"],
+                        risk_scale=result["risk_scale"],
+                        quality_filtered=quality_filtered,
+                        quality_scores=quality_scores,
                     )
-                else:
-                    active_wl = WATCHLIST
+                    tuner.save(str(TUNER_FILE))
 
-                total = sum(len(v) for v in active_wl.values())
-                _step(f"Fetching EOD data ({total} tickers)...")
-                raw = fetch_all(active_wl, years=3)
+                    STATE_FILE.parent.mkdir(exist_ok=True)
+                    STATE_FILE.write_text(
+                        json.dumps({"date": today_ts.strftime("%Y-%m-%d"),
+                                    "decisions": candidates,
+                                    "tuner_mode": result["tuner_mode"]},
+                                   indent=2, default=str))
 
-                _step(f"Calculating indicators for {len(raw)} tickers...")
-                data_map = {t: calculate_all(df) for t, df in raw.items()}
+                status.update(label="Scan complete!", state="complete")
 
-                _step("Scoring universe (momentum velocity + SMA50 trend)...")
-                scores_df = score_all(data_map)
-                quality_report(scores_df, top_n=len(scores_df))
+            # Metric bar
+            enters = [c for c in candidates if c.get("decision") == "ENTER"]
+            nears  = [c for c in candidates if c.get("decision") == "NEAR"]
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("ENTER signals",   len(enters))
+            m2.metric("NEAR signals",    len(nears))
+            m3.metric("Tuner mode",      result["tuner_mode"])
+            m4.metric("Tickers scanned", len(candidates))
+
+            st.code(_strip(report_text), language=None)
+
+            with st.expander("📋 Progress log"):
+                st.text(_strip(buf.getvalue()))
 
         except Exception as exc:
-            import traceback
-            w.write(f"\n\033[91mError: {exc}\033[0m\n{traceback.format_exc()}")
-        finally:
-            self._busy = False
-            self.after(0, lambda: self._univ_btn.configure(
-                state="normal", text="▶  Score Universe"))
-            self.after(0, lambda: self._status.set(
-                f"Universe scoring complete — {datetime.now().strftime('%H:%M:%S')}"))
+            st.error(f"Scan failed: {exc}")
+            with st.expander("📋 Progress log"):
+                st.text(_strip(buf.getvalue()))
+            st.exception(exc)
 
-    def _run_posttrade(self):
-        if self._check_busy():
-            return
-        self._clear(self._pt_out)
-        self._target = self._pt_out
-        self._busy   = True
-        self._pt_btn.configure(state="disabled", text="Running…")
-        self._status.set("Running post-trade analysis…")
-        threading.Thread(target=self._worker_posttrade, daemon=True).start()
 
-    def _worker_posttrade(self):
-        import contextlib
-        w = _QWriter(self._q)
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 2 — Short-Term Backtest
+# ══════════════════════════════════════════════════════════════════════════════
+
+with T_BT:
+    st.header("Short-Term Backtest  (ATR-Dynamic)")
+    st.caption("Tick-by-tick simulation using the same DecisionEngine as the live scan.")
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        bt_market     = st.selectbox("Market", ["IN", "US", "EU", "ALL"], key="bt_market")
+        bt_start      = st.date_input("Start", value=date(2016, 1, 1), key="bt_start")
+        bt_end        = st.date_input("End",   value=date.today(),      key="bt_end")
+    with c2:
+        bt_equity     = st.number_input("Equity",       value=equity_s,             key="bt_equity")
+        bt_commission = st.number_input("Commission %", value=commission_s * 100,
+                                         step=0.01, format="%.2f", key="bt_comm") / 100
+        bt_slippage   = st.number_input("Slippage %",   value=slippage_s * 100,
+                                         step=0.01, format="%.2f", key="bt_slip") / 100
+    with c3:
+        bt_no_dyn     = st.checkbox("Use hardcoded watchlist (skip dynamic)", value=False)
+
+    if st.button("▶ Run ST Backtest", type="primary", key="btn_bt"):
+        buf = io.StringIO()
         try:
-            from post_trade import run as pt_run
-            with contextlib.redirect_stdout(w), contextlib.redirect_stderr(w):
-                pt_run()
-        except Exception as exc:
-            import traceback
-            w.write(f"\n\033[91mError: {exc}\033[0m\n{traceback.format_exc()}")
-        finally:
-            self._busy = False
-            self.after(0, lambda: self._pt_btn.configure(
-                state="normal", text="▶  Run Post-Trade Analysis"))
-            self.after(0, lambda: self._status.set(
-                f"Post-trade complete — {datetime.now().strftime('%H:%M:%S')}"))
-
-    def _run_backtest(self):
-        if self._check_busy():
-            return
-
-        start = self._bt_start.get().strip()
-        end   = self._bt_end.get().strip()
-
-        try:
-            pd.Timestamp(start)
-        except Exception:
-            messagebox.showerror("Invalid date", f"Start date '{start}' is not a valid YYYY-MM-DD date.")
-            return
-
-        if end:
-            try:
-                pd.Timestamp(end)
-            except Exception:
-                messagebox.showerror("Invalid date", f"End date '{end}' is not a valid YYYY-MM-DD date.")
-                return
-
-        self._clear(self._bt_out)
-        self._target = self._bt_out
-        self._busy   = True
-        self._bt_btn.configure(state="disabled", text="Running…")
-        self._status.set("Running backtest…")
-        market = self._bt_market.get()
-        threading.Thread(target=self._worker_bt,
-                         args=(market, start, end or None), daemon=True).start()
-
-    def _worker_bt(self, market: str, start: str, end: str | None):
-        import contextlib
-        import pandas as pd
-        w = _QWriter(self._q)
-        self._apply_settings_to_config()
-        try:
-            from config import WATCHLIST, ACCOUNT, DYNAMIC_UNIVERSE
+            from config import WATCHLIST, DYNAMIC_UNIVERSE
             from backtest import run_backtest
             from report import backtest_report
 
-            acct     = self._settings["account_size"]
-            label    = "ALL_MARKETS" if market == "ALL" else f"{market}_only"
-            end_disp = end or "today"
+            with st.status("Running short-term backtest…", expanded=True) as status:
+                active_markets = ([bt_market] if bt_market != "ALL" else list(WATCHLIST.keys()))
+                use_dyn = dynamic_universe_s and not bt_no_dyn
 
-            active_markets = ([market] if market != "ALL" else list(WATCHLIST.keys()))
-            use_dyn = self._settings.get("dynamic_universe",
-                                         DYNAMIC_UNIVERSE.get("ENABLED", False))
-
-            with contextlib.redirect_stdout(w), contextlib.redirect_stderr(w):
-                w.write(f"\nBacktesting [{market}]  {start} to {end_disp}"
-                        f"  dynamic={'yes' if use_dyn else 'no'}\n")
-
-                if use_dyn:
-                    from universe import get_dynamic_watchlist
-                    score_top_n = DYNAMIC_UNIVERSE.get("SCORE_TOP_N", {})
-                    w.write(f"Building dynamic universe "
-                            f"(US={score_top_n.get('US','--')}, "
-                            f"EU={score_top_n.get('EU','--')}, "
-                            f"IN={score_top_n.get('IN','--')})...\n")
-                    watchlist_override = get_dynamic_watchlist(
-                        active_markets, score_top_n,
-                        max_age_days=DYNAMIC_UNIVERSE.get("MAX_AGE_DAYS", 7),
-                    )
-                else:
-                    watchlist_override = {m: WATCHLIST[m]
-                                          for m in active_markets if m in WATCHLIST}
+                st.write("⚙ Building universe…")
+                with contextlib.redirect_stdout(buf):
+                    if use_dyn:
+                        from universe import get_dynamic_watchlist
+                        score_top_n = DYNAMIC_UNIVERSE.get("SCORE_TOP_N", {})
+                        watchlist_override = get_dynamic_watchlist(
+                            active_markets, score_top_n,
+                            max_age_days=DYNAMIC_UNIVERSE.get("MAX_AGE_DAYS", 7))
+                    else:
+                        watchlist_override = {m: WATCHLIST[m] for m in active_markets if m in WATCHLIST}
 
                 total_t = sum(len(v) for v in watchlist_override.values())
-                w.write(f"Universe: {total_t} tickers across {list(watchlist_override.keys())}\n")
-
-                result = run_backtest(
-                    market=market,
-                    start=start,
-                    end=end,
-                    initial_equity=acct,
-                    watchlist_override=watchlist_override,
-                )
-                backtest_report(result, market_label=label)
-
-        except Exception as exc:
-            import traceback
-            w.write(f"\n\033[91mError: {exc}\033[0m\n{traceback.format_exc()}")
-        finally:
-            self._busy = False
-            self.after(0, lambda: self._bt_btn.configure(
-                state="normal", text="▶  Run Backtest"))
-            self.after(0, lambda: self._status.set(
-                f"Backtest complete — {datetime.now().strftime('%H:%M:%S')}"))
-
-    def _run_replacement(self):
-        if self._check_busy():
-            return
-        self._clear(self._repl_out)
-        self._target = self._repl_out
-        self._busy   = True
-        self._repl_btn.configure(state="disabled", text="Running…")
-        self._status.set("Building bench list…")
-        market = self._repl_market.get()
-        try:
-            top_n = int(self._repl_topn.get())
-        except ValueError:
-            top_n = 20
-        use_qf = self._repl_qf.get()
-        threading.Thread(target=self._worker_replacement,
-                         args=(market, top_n, use_qf), daemon=True).start()
-
-    def _worker_replacement(self, market: str, top_n: int, use_qf: bool):
-        import contextlib
-        w = _QWriter(self._q)
-        self._apply_settings_to_config()
-        try:
-            from config import WATCHLIST, DYNAMIC_UNIVERSE
-            from data import fetch_all
-            from indicators import calculate_all
-            from adaptive_tuner import AdaptiveTuner
-            from replacement_list import build_replacement_list, format_bench_table
-            from pathlib import Path
-
-            root    = Path(__file__).parent
-            active  = ["US", "EU", "IN"] if market == "ALL" else [market]
-            use_dyn = self._settings.get("dynamic_universe", DYNAMIC_UNIVERSE.get("ENABLED", False))
-
-            with contextlib.redirect_stdout(w), contextlib.redirect_stderr(w):
-                w.write(f"\nBuilding bench list [{market}]  top_n={top_n}...\n")
-
-                if use_dyn:
-                    from universe import get_dynamic_watchlist
-                    score_top_n = {m: DYNAMIC_UNIVERSE["SCORE_TOP_N"].get(m, 200) for m in active}
-                    w.write("  [universe] Building dynamic universe...\n")
-                    wl = get_dynamic_watchlist(
-                        active, score_top_n,
-                        max_age_days=DYNAMIC_UNIVERSE.get("MAX_AGE_DAYS", 7),
+                st.write(f"📥 Fetching & simulating {total_t} tickers  "
+                         f"({bt_start} → {bt_end})…")
+                with contextlib.redirect_stdout(buf):
+                    result = run_backtest(
+                        market=bt_market,
+                        start=str(bt_start),
+                        end=str(bt_end),
+                        initial_equity=bt_equity,
+                        commission=bt_commission,
+                        slippage=bt_slippage,
+                        watchlist_override=watchlist_override,
                     )
+
+                if "error" in result:
+                    status.update(label="Error", state="error")
+                    st.error(result["error"])
                 else:
-                    wl = {m: WATCHLIST[m] for m in active if m in WATCHLIST}
+                    st.write("📝 Generating report…")
+                    with contextlib.redirect_stdout(buf):
+                        label = f"{bt_market}_only" if bt_market != "ALL" else "ALL_MARKETS"
+                        report_text = backtest_report(result, market_label=label)
+                    status.update(label="Backtest complete!", state="complete")
 
-                raw      = fetch_all(wl, years=3)
-                data_map = {t: calculate_all(df) for t, df in raw.items()}
+            if "error" not in result:
+                m = result.get("metrics", {})
+                m1, m2, m3, m4, m5 = st.columns(5)
+                m1.metric("CAGR",        f"{m.get('cagr_pct', 0):+.2f}%")
+                m2.metric("Total Return", f"{m.get('total_return_pct', 0):+.2f}%")
+                m3.metric("Max DD",      f"{m.get('max_drawdown_pct', 0):.2f}%")
+                m4.metric("Sharpe",      f"{m.get('sharpe_ratio', 0):.3f}")
+                m5.metric("Trades",      m.get("total_trades", 0))
 
-                quality_scores: dict = {}
-                if use_qf:
-                    from select_stocks import quality_score_all
-                    w.write("  [quality] Scoring candidates...\n")
-                    quality_scores = quality_score_all(data_map)
+                ec = result.get("equity_curve", [])
+                if ec:
+                    ec_df = pd.DataFrame(ec).set_index("date")
+                    ec_df.index = pd.to_datetime(ec_df.index)
+                    st.subheader("Equity Curve")
+                    st.area_chart(ec_df["equity"], use_container_width=True)
 
-                tuner = AdaptiveTuner.load(str(root / "tuner_state.json"))
+                st.code(_strip(report_text), language=None)
 
-                for mk in active:
-                    bench = build_replacement_list(
-                        mk, data_map,
-                        tuner_mode=tuner.mode,
-                        top_n=top_n,
-                        quality_scores=quality_scores,
+                trades = result.get("closed_trades", result.get("trades", []))
+                if trades:
+                    st.download_button(
+                        "⬇ Download Trades CSV",
+                        data=pd.DataFrame(trades).to_csv(index=False),
+                        file_name=f"trades_{bt_market}_{bt_start}.csv",
+                        mime="text/csv",
                     )
-                    w.write(f"\n{'='*88}\n")
-                    w.write(f"  REPLACEMENT LIST -- {mk}  (tuner: {tuner.mode})  {len(bench)} candidates\n")
-                    w.write(f"{'='*88}\n")
-                    w.write(format_bench_table(bench) + "\n")
+
+            with st.expander("📋 Progress log"):
+                st.text(_strip(buf.getvalue()))
 
         except Exception as exc:
-            import traceback
-            w.write(f"\n\033[91mError: {exc}\033[0m\n{traceback.format_exc()}")
-        finally:
-            self._busy = False
-            self.after(0, lambda: self._repl_btn.configure(
-                state="normal", text="▶  Build Bench List"))
-            self.after(0, lambda: self._status.set(
-                f"Bench list complete — {datetime.now().strftime('%H:%M:%S')}"))
+            st.error(f"Backtest failed: {exc}")
+            with st.expander("📋 Progress log"):
+                st.text(_strip(buf.getvalue()))
+            st.exception(exc)
 
-    def _run_longterm(self):
-        if self._check_busy():
-            return
-        try:
-            min_q = int(self._lt_minq.get().strip())
-        except ValueError:
-            messagebox.showerror("Invalid input", "Min-Q must be an integer (e.g. 55)")
-            return
-        try:
-            top_n = int(self._lt_topn.get().strip())
-        except ValueError:
-            messagebox.showerror("Invalid input", "Top-N IN must be an integer (e.g. 250)")
-            return
 
-        self._clear(self._lt_out)
-        self._target = self._lt_out
-        self._busy   = True
-        self._lt_btn.configure(state="disabled", text="Running...")
-        self._status.set("Running long-term screener...")
-        threading.Thread(
-            target=self._worker_longterm,
-            args=(
-                self._lt_markets.get(),
-                min_q,
-                self._lt_near.get(),
-                self._lt_refresh.get(),
-                top_n,
-            ),
-            daemon=True,
-        ).start()
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 3 — Long-Term Backtest
+# ══════════════════════════════════════════════════════════════════════════════
 
-    def _worker_longterm(self, markets: str, min_q: int, include_near: bool,
-                         refresh_cache: bool, top_n_in: int):
-        import contextlib, io, re as _re
-        w = _QWriter(self._q)
-        self._apply_settings_to_config()
-        try:
-            from run_longterm import run_longterm_screen
-            buf = io.StringIO()
-            tee = _TeeWriter(w, buf)
-            with contextlib.redirect_stdout(tee), contextlib.redirect_stderr(tee):
-                run_longterm_screen(
-                    markets       = markets,
-                    min_q         = min_q,
-                    include_near  = include_near,
-                    refresh_cache = refresh_cache,
-                    top_n_in      = top_n_in,
-                )
-            # Save plain-text copy to reports/
-            plain = _re.sub(r"\x1b\[[0-9;]*m", "", buf.getvalue())
-            rdir  = ROOT / "reports"
-            rdir.mkdir(exist_ok=True)
-            fname = rdir / f"longterm-screen-{datetime.now():%Y-%m-%d}-{markets.replace(',','-')}.txt"
-            fname.write_text(plain, encoding="utf-8")
-            w.write(f"\n  Report saved -> reports/{fname.name}\n")
-            self.after(0, self._refresh_reports)
-        except Exception as exc:
-            import traceback
-            w.write(f"\n\033[91mError: {exc}\033[0m\n{traceback.format_exc()}")
-        finally:
-            self._busy = False
-            self.after(0, lambda: self._lt_btn.configure(
-                state="normal", text="▶  Run Long-Term Screen"))
-            self.after(0, lambda: self._status.set(
-                f"Long-term screen complete — {datetime.now().strftime('%H:%M:%S')}"))
+with T_LTB:
+    st.header("Long-Term Backtest  (Quarterly Momentum Rebalancing)")
+    st.caption("Three independent exit triggers: SMA breakdown · momentum floor · rotation.")
 
-    def _run_lt_backtest(self):
-        if self._check_busy():
-            return
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        ltb_market    = st.selectbox("Market", ["IN", "US", "EU"], key="ltb_market")
+        ltb_start     = st.date_input("Start", value=date(2015, 1, 1), key="ltb_start")
+        ltb_end       = st.date_input("End",   value=date.today(),      key="ltb_end")
+    with c2:
+        ltb_equity    = st.number_input("Equity", value=equity_s, key="ltb_equity")
+        ltb_slots     = st.number_input("Slots",  value=10, min_value=1, max_value=30, key="ltb_slots")
+        ltb_rebalance = st.selectbox(
+            "Rebalance interval",
+            options=[21, 63, 126, 252],
+            index=1,
+            format_func=lambda x: {21: "Monthly (21d)", 63: "Quarterly (63d)",
+                                    126: "Semi-Annual (126d)", 252: "Annual (252d)"}[x],
+        )
+    with c3:
+        ltb_no_breakdown = st.checkbox("Disable SMA breakdown exit", value=False)
+        ltb_mom_floor    = st.number_input("Momentum floor %", value=-5.0, step=1.0,
+                                            help="Exit at rebalance if avg momentum < N%. -99 = OFF.")
+        ltb_commission   = st.number_input("Commission %", value=commission_s * 100,
+                                            step=0.01, format="%.2f", key="ltb_comm") / 100
 
-        start = self._ltbt_start.get().strip()
-        end   = self._ltbt_end.get().strip()
-
-        try:
-            pd.Timestamp(start)
-        except Exception:
-            messagebox.showerror("Invalid date", f"Start date '{start}' is not valid (use YYYY-MM-DD).")
-            return
-        if end:
-            try:
-                pd.Timestamp(end)
-            except Exception:
-                messagebox.showerror("Invalid date", f"End date '{end}' is not valid (use YYYY-MM-DD).")
-                return
-
-        try:
-            slots = int(self._ltbt_slots.get().strip())
-        except ValueError:
-            messagebox.showerror("Invalid input", "Slots must be an integer (e.g. 10)")
-            return
-
-        reb_raw = self._ltbt_reb.get()
-        try:
-            reb_days = int(reb_raw.split()[0])
-        except (ValueError, IndexError):
-            reb_days = 63
-
-        try:
-            mf_pct = float(self._ltbt_mfloor.get().strip())
-        except ValueError:
-            mf_pct = -5.0
-        momentum_floor = mf_pct / 100.0  # -5 -> -0.05
-
-        self._clear(self._lt_out)
-        self._target = self._lt_out
-        self._busy   = True
-        self._ltbt_btn.configure(state="disabled", text="Running...")
-        self._status.set("Running long-term backtest...")
-        threading.Thread(
-            target=self._worker_lt_backtest,
-            args=(
-                self._ltbt_market.get(),
-                start,
-                end or pd.Timestamp.today().strftime("%Y-%m-%d"),
-                slots,
-                reb_days,
-                self._ltbt_breakdown.get(),
-                momentum_floor,
-            ),
-            daemon=True,
-        ).start()
-
-    def _worker_lt_backtest(self, market: str, start: str, end: str,
-                            slots: int, rebalance_days: int, exit_on_breakdown: bool,
-                            momentum_floor: float = -0.05):
-        import contextlib
-        w = _QWriter(self._q)
-        self._apply_settings_to_config()
+    if st.button("▶ Run LT Backtest", type="primary", key="btn_ltb"):
+        buf = io.StringIO()
         try:
             from config import WATCHLIST, DYNAMIC_UNIVERSE
             from data import fetch_all
             from indicators import calculate_all
             from backtest_longterm import run_longterm_backtest, longterm_backtest_report
 
-            use_dyn = self._settings.get("dynamic_universe",
-                                         DYNAMIC_UNIVERSE.get("ENABLED", False))
+            market = ltb_market.upper()
+            with st.status("Running long-term backtest…", expanded=True) as status:
 
-            with contextlib.redirect_stdout(w), contextlib.redirect_stderr(w):
-                from backtest_longterm import REBALANCE_LABEL
-                reb_lbl = REBALANCE_LABEL.get(rebalance_days, f"every {rebalance_days}d")
-                mf_disp = (f"{momentum_floor*100:.0f}%"
-                           if momentum_floor > -1.0 else "OFF")
-                w.write(f"\nLong-Term Backtest  [{market}]  {start} to {end}\n")
-                w.write(f"Slots: {slots}  |  Rebalance: {reb_lbl}"
-                        f"  |  Breakdown exit: {'ON' if exit_on_breakdown else 'OFF'}"
-                        f"  |  Mom.floor: {mf_disp}\n\n")
-
-                if use_dyn:
-                    from universe import get_dynamic_watchlist
-                    score_top_n = DYNAMIC_UNIVERSE.get("SCORE_TOP_N", {})
-                    top_n_mkt   = {market: score_top_n.get(
-                                       market, 250 if market == "IN" else 200)}
-                    w.write(f"[1/3] Building dynamic universe (top-{top_n_mkt[market]})...\n")
-                    wl = get_dynamic_watchlist(
-                        [market], top_n_mkt,
-                        max_age_days=DYNAMIC_UNIVERSE.get("MAX_AGE_DAYS", 7))
-                else:
-                    wl = {market: WATCHLIST.get(market, [])}
+                st.write("⚙ Building universe…")
+                with contextlib.redirect_stdout(buf):
+                    if dynamic_universe_s:
+                        from universe import get_dynamic_watchlist
+                        score_top_n = {market: DYNAMIC_UNIVERSE.get("SCORE_TOP_N", {}).get(market, 250)}
+                        wl = get_dynamic_watchlist([market], score_top_n,
+                                                    max_age_days=DYNAMIC_UNIVERSE.get("MAX_AGE_DAYS", 7))
+                    else:
+                        wl = {market: WATCHLIST.get(market, [])}
 
                 total_t = sum(len(v) for v in wl.values())
-                w.write(f"[1/3] Universe: {total_t} tickers\n")
+                years_needed = max(4, (date.today().year - ltb_start.year) + 3)
+                st.write(f"📥 Fetching {total_t} tickers ({years_needed} yrs of history)…")
+                with contextlib.redirect_stdout(buf):
+                    raw_data = fetch_all(wl, years=years_needed)
 
-                import pandas as pd
-                start_ts  = pd.Timestamp(start)
-                extra_yrs = max(3, (pd.Timestamp(end) - start_ts).days // 365 + 3)
-                w.write(f"[2/3] Fetching price data ({extra_yrs} years of history)...\n")
-                raw_data = fetch_all(wl, years=extra_yrs)
-                w.write(f"      Loaded {len(raw_data)} tickers\n")
+                st.write(f"⚙ Calculating indicators for {len(raw_data)} tickers…")
+                with contextlib.redirect_stdout(buf):
+                    data_map = {t: calculate_all(df) for t, df in raw_data.items()}
 
-                w.write(f"[3/3] Calculating indicators + running simulation...\n")
-                data_map = {t: calculate_all(df) for t, df in raw_data.items()}
+                st.write("🏃 Running rebalancing simulation…")
+                with contextlib.redirect_stdout(buf):
+                    result = run_longterm_backtest(
+                        market=market,
+                        data_map=data_map,
+                        start=str(ltb_start),
+                        end=str(ltb_end),
+                        equity=ltb_equity,
+                        max_positions=int(ltb_slots),
+                        rebalance_days=ltb_rebalance,
+                        exit_on_breakdown=not ltb_no_breakdown,
+                        momentum_floor=ltb_mom_floor / 100.0,
+                        commission=ltb_commission,
+                        slippage=slippage_s,
+                    )
+                    report_text = longterm_backtest_report(result)
 
-                result = run_longterm_backtest(
-                    market              = market,
-                    data_map            = data_map,
-                    start               = start,
-                    end                 = end,
-                    equity              = float(self._settings.get("account_size", 100_000)),
-                    max_positions       = slots,
-                    rebalance_days      = rebalance_days,
-                    exit_on_breakdown   = exit_on_breakdown,
-                    momentum_floor      = momentum_floor,
-                )
+                status.update(label="Done!", state="complete")
 
-                report_text = longterm_backtest_report(result)
-                w.write(report_text)
+            m = result.get("metrics", {})
+            m1, m2, m3, m4, m5 = st.columns(5)
+            m1.metric("CAGR",         f"{m.get('cagr_pct', 0):+.2f}%")
+            m2.metric("Total Return",  f"{m.get('total_return_pct', 0):+.2f}%")
+            m3.metric("Max DD",        f"{m.get('max_drawdown_pct', 0):.2f}%")
+            m4.metric("Sharpe",        f"{m.get('sharpe_ratio', 0):.3f}")
+            m5.metric("Rebalances",    m.get("total_rebalances", "—"))
 
-                # Save plain-text copy to reports/
-                import re as _re
-                plain = _re.sub(r"\x1b\[[0-9;]*m", "", report_text)
-                rdir  = ROOT / "reports"
-                rdir.mkdir(exist_ok=True)
-                fname = rdir / f"longterm-backtest-{datetime.now():%Y-%m-%d}-{market}.txt"
-                fname.write_text(plain, encoding="utf-8")
-                w.write(f"\n  Report saved -> reports/{fname.name}\n")
-                self.after(0, self._refresh_reports)
+            ec = result.get("equity_curve", [])
+            if ec:
+                try:
+                    if isinstance(ec[0], dict):
+                        ec_df = pd.DataFrame(ec).set_index("date")
+                        ec_df.index = pd.to_datetime(ec_df.index)
+                        col = "equity" if "equity" in ec_df.columns else ec_df.columns[0]
+                    else:
+                        ec_df = pd.DataFrame({"equity": ec})
+                    st.subheader("Equity Curve")
+                    st.area_chart(ec_df[col] if isinstance(ec[0], dict) else ec_df["equity"],
+                                  use_container_width=True)
+                except Exception:
+                    pass
+
+            st.code(_strip(report_text), language=None)
+
+            with st.expander("📋 Progress log"):
+                st.text(_strip(buf.getvalue()))
 
         except Exception as exc:
-            import traceback
-            w.write(f"\n\033[91mError: {exc}\033[0m\n{traceback.format_exc()}")
-        finally:
-            self._busy = False
-            self.after(0, lambda: self._ltbt_btn.configure(
-                state="normal", text="▶  Run LT Backtest"))
-            self.after(0, lambda: self._status.set(
-                f"LT backtest complete — {datetime.now().strftime('%H:%M:%S')}"))
+            st.error(f"LT backtest failed: {exc}")
+            with st.expander("📋 Progress log"):
+                st.text(_strip(buf.getvalue()))
+            st.exception(exc)
 
-    def _refresh_reports(self):
-        self._rpt_lb.delete(0, "end")
-        rd = ROOT / "reports"
-        if rd.exists():
-            for f in sorted(rd.glob("*.txt"), reverse=True):
-                self._rpt_lb.insert("end", f.name)
 
-    def _view_report(self, _=None):
-        sel = self._rpt_lb.curselection()
-        if not sel:
-            return
-        path = ROOT / "reports" / self._rpt_lb.get(sel[0])
-        if path.exists():
-            self._clear(self._rpt_out)
-            self._write(self._rpt_out, path.read_text(encoding="utf-8"))
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 4 — Long-Term Screener
+# ══════════════════════════════════════════════════════════════════════════════
 
-    def _save_settings(self):
-        str_keys   = {"momentum_periods"}
-        float_keys = {"max_position_size_pct", "max_concentration_pct"}
+with T_LTS:
+    st.header("Long-Term Fundamental Screener")
+    st.caption("65% fundamental (Q-score) + 35% technical. Tiered BUY / NEAR / WATCH output.")
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        lts_markets = st.multiselect("Markets", ["IN", "US", "EU"], default=["IN"], key="lts_mkts")
+    with c2:
+        lts_min_q   = st.slider("Min technical Q-score", 30, 80, 55)
+        lts_no_near = st.checkbox("ENTER signals only (exclude NEAR)", value=False)
+    with c3:
+        lts_refresh = st.checkbox("Refresh fundamental cache (force re-fetch)", value=False)
+        lts_top_n   = st.number_input("Universe size (IN)", value=250, step=50, key="lts_topn")
+
+    if st.button("▶ Run Screener", type="primary", key="btn_lts"):
+        if not lts_markets:
+            st.warning("Select at least one market.")
+            st.stop()
+
+        buf = io.StringIO()
         try:
-            new = {}
-            for k, sv in self._sv.items():
-                val = sv.get()
-                if k in str_keys:
-                    new[k] = val
-                elif k in float_keys:
-                    new[k] = float(val)
-                else:
-                    new[k] = int(val)
-            for k, bv in self._bv.items():
-                new[k] = bv.get()
-            self._settings = new
-            _save_settings(self._settings)
-            self._acct_lbl.configure(
-                text=f"€{self._settings['account_size']:,.0f}")
-            messagebox.showinfo("Saved", "Settings saved successfully.")
-        except ValueError:
-            messagebox.showerror("Error", "Numeric fields must be valid numbers.")
+            from run_longterm import run_longterm_screen
 
-    def _fill_watchlist(self, widget: tk.Text):
-        try:
-            from config import WATCHLIST, MARKETS
-            widget.configure(state="normal")
-            for mk in ["US", "EU", "IN"]:
-                m    = MARKETS.get(mk, {})
-                note = "" if m.get("tradeable", True) else "  [analysis only]"
-                widget.insert("end",
-                              f"\n[{mk}] {m.get('name','?')} ({m.get('currency','?')}){note}\n")
-                for ticker in WATCHLIST.get(mk, []):
-                    widget.insert("end", f"  {ticker}\n")
+            with st.status("Running fundamental screener…", expanded=True) as status:
+                with contextlib.redirect_stdout(buf):
+                    run_longterm_screen(
+                        markets=",".join(lts_markets),
+                        min_q=lts_min_q,
+                        include_near=not lts_no_near,
+                        refresh_cache=lts_refresh,
+                        top_n_in=int(lts_top_n),
+                    )
+                status.update(label="Screen complete!", state="complete")
+
+            output = _strip(buf.getvalue())
+            if output.strip():
+                st.code(output, language=None)
+            else:
+                st.info("No output — check that universe tickers are downloadable.")
+
         except Exception as exc:
-            widget.configure(state="normal")
-            widget.insert("end", f"Could not read config.py: {exc}\n")
-        finally:
-            widget.configure(state="disabled")
+            st.error(f"Screener failed: {exc}")
+            st.text(_strip(buf.getvalue()))
+            st.exception(exc)
 
 
-# ── Entry point ───────────────────────────────────────────────────────────────
-if __name__ == "__main__":
-    App().mainloop()
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 5 — Walk-Forward
+# ══════════════════════════════════════════════════════════════════════════════
+
+with T_WF:
+    st.header("Walk-Forward Optimisation")
+    st.caption("Optimises gate parameters on rolling in-sample windows; evaluates out-of-sample.")
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        wf_market   = st.selectbox("Market", ["IN", "US", "EU", "ALL"], key="wf_market")
+        wf_years    = st.number_input("Years of history", value=5, min_value=2, max_value=15, key="wf_years")
+    with c2:
+        wf_train    = st.number_input("Train window (trading days)", value=504, step=63, key="wf_train",
+                                       help="504 ≈ 2 years")
+        wf_test     = st.number_input("Test window  (trading days)", value=126, step=21,  key="wf_test",
+                                       help="126 ≈ 6 months")
+    with c3:
+        wf_anchored = st.checkbox("Anchored (expanding) train window", value=False)
+        wf_equity   = st.number_input("Equity", value=equity_s, key="wf_equity")
+
+    if st.button("▶ Run Walk-Forward", type="primary", key="btn_wf"):
+        buf = io.StringIO()
+        try:
+            from config import WATCHLIST, ACCOUNT
+            from data import fetch_and_cache
+            from indicators import calculate_all
+            from walk_forward import walk_forward, format_wfo_summary
+
+            with st.status("Running walk-forward…", expanded=True) as status:
+                active = (["US", "EU", "IN"] if wf_market == "ALL" else [wf_market])
+                wl = {m: WATCHLIST[m] for m in active if m in WATCHLIST}
+                all_tickers = [t for tl in wl.values() for t in tl]
+
+                st.write(f"📥 Fetching {len(all_tickers)} tickers ({wf_years} yrs)…")
+                with contextlib.redirect_stdout(buf):
+                    data_map_raw, stats = fetch_and_cache(all_tickers, years=wf_years)
+
+                st.write(f"⚙ {stats['succeeded']}/{stats['attempted']} tickers ok. Computing indicators…")
+                with contextlib.redirect_stdout(buf):
+                    data_map   = {t: calculate_all(df) for t, df in data_map_raw.items()}
+                    all_dates  = sorted({d for df in data_map.values() for d in df.index})
+
+                st.write("🔄 Running walk-forward folds… (this may take several minutes)")
+                with contextlib.redirect_stdout(buf):
+                    result = walk_forward(
+                        data_map=data_map,
+                        watchlist=wl,
+                        all_dates=all_dates,
+                        train_size=int(wf_train),
+                        test_size=int(wf_test),
+                        anchored=wf_anchored,
+                        initial_equity=wf_equity,
+                        verbose=True,
+                    )
+                    report_text = format_wfo_summary(result)
+
+                status.update(label="Done!", state="complete")
+
+            st.code(_strip(report_text), language=None)
+            with st.expander("📋 Progress log"):
+                st.text(_strip(buf.getvalue()))
+
+        except Exception as exc:
+            st.error(f"Walk-forward failed: {exc}")
+            with st.expander("📋 Progress log"):
+                st.text(_strip(buf.getvalue()))
+            st.exception(exc)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 6 — Stress Tests
+# ══════════════════════════════════════════════════════════════════════════════
+
+with T_ST:
+    st.header("Stress Tests")
+    st.caption("Historical windows (2008, 2020, 2022) + synthetic shocks (vol spike, liquidity collapse, gaps, correlation crisis).")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st_market  = st.selectbox("Market", ["IN", "US", "EU", "ALL"], key="st_market")
+        st_years   = st.number_input("Years of history", value=5, min_value=2, key="st_years")
+        st_equity  = st.number_input("Equity", value=equity_s, key="st_equity")
+    with c2:
+        st_mode = st.radio("Scenarios to run", ["All", "Historical only", "Synthetic only"],
+                            horizontal=True)
+
+    if st.button("▶ Run Stress Tests", type="primary", key="btn_st"):
+        buf = io.StringIO()
+        try:
+            from config import WATCHLIST
+            from data import fetch_and_cache
+            from indicators import calculate_all
+            from stress_tests import (run_all_stress_tests, run_historical_stress,
+                                       run_synthetic_stress, format_stress_summary)
+
+            with st.status("Running stress tests…", expanded=True) as status:
+                active      = (["US", "EU", "IN"] if st_market == "ALL" else [st_market])
+                wl          = {m: WATCHLIST[m] for m in active if m in WATCHLIST}
+                all_tickers = [t for tl in wl.values() for t in tl]
+
+                st.write(f"📥 Fetching {len(all_tickers)} tickers…")
+                with contextlib.redirect_stdout(buf):
+                    data_map_raw, stats = fetch_and_cache(all_tickers, years=st_years)
+
+                st.write(f"⚙ Computing indicators…")
+                with contextlib.redirect_stdout(buf):
+                    data_map = {t: calculate_all(df) for t, df in data_map_raw.items()}
+
+                st.write(f"💪 Running {st_mode.lower()} scenarios…")
+                with contextlib.redirect_stdout(buf):
+                    if st_mode == "Historical only":
+                        result = {"historical": run_historical_stress(data_map, wl, st_equity),
+                                  "synthetic":  {}}
+                    elif st_mode == "Synthetic only":
+                        result = {"historical": {},
+                                  "synthetic":  run_synthetic_stress(data_map, wl, st_equity)}
+                    else:
+                        result = run_all_stress_tests(data_map, wl, initial_equity=st_equity)
+
+                    report_text = format_stress_summary(result)
+
+                status.update(label="Done!", state="complete")
+
+            st.code(_strip(report_text), language=None)
+            with st.expander("📋 Progress log"):
+                st.text(_strip(buf.getvalue()))
+
+        except Exception as exc:
+            st.error(f"Stress tests failed: {exc}")
+            with st.expander("📋 Progress log"):
+                st.text(_strip(buf.getvalue()))
+            st.exception(exc)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 7 — Monte Carlo
+# ══════════════════════════════════════════════════════════════════════════════
+
+with T_MC:
+    st.header("Monte Carlo Robustness Analysis")
+    st.caption("Bootstraps the backtest trade log N times. Run ST Backtest first to generate a trades CSV.")
+
+    reports_dir  = ROOT / "reports"
+    trade_files  = sorted(reports_dir.glob("*-trades.csv"), reverse=True) if reports_dir.exists() else []
+    file_options = {f.name: f for f in trade_files}
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        mc_n_sims    = st.number_input("Simulations", value=5_000, step=1_000, min_value=100)
+    with c2:
+        mc_skip_prob = st.number_input("Trade skip probability", value=0.05, step=0.01,
+                                        format="%.2f", help="Randomly skip this fraction of trades.")
+    with c3:
+        mc_equity    = st.number_input("Equity", value=equity_s, key="mc_equity")
+
+    mc_file = st.selectbox(
+        "Trade CSV  (from a previous ST Backtest)",
+        options=["(use latest)"] + list(file_options.keys()),
+        help="Run the ST Backtest tab first — it saves a trades CSV to reports/.",
+    )
+
+    if st.button("▶ Run Monte Carlo", type="primary", key="btn_mc"):
+        if not trade_files:
+            st.error("No trades CSV found in reports/. Run the ST Backtest tab first.")
+            st.stop()
+
+        trades_path = (trade_files[0] if mc_file == "(use latest)"
+                       else file_options[mc_file])
+
+        buf = io.StringIO()
+        try:
+            from monte_carlo import run_monte_carlo, format_mc_summary
+
+            with st.status("Running Monte Carlo…", expanded=True) as status:
+                st.write(f"📥 Loading {trades_path.name}…")
+                trades_df = pd.read_csv(trades_path)
+                trades    = trades_df.to_dict("records")
+                st.write(f"🎲 Running {mc_n_sims:,} simulations on {len(trades)} trades…")
+
+                with contextlib.redirect_stdout(buf):
+                    result = run_monte_carlo(
+                        trades=trades,
+                        initial_equity=mc_equity,
+                        n_sims=int(mc_n_sims),
+                        skip_prob=mc_skip_prob,
+                        seed=42,
+                    )
+                    report_text = format_mc_summary(result)
+
+                status.update(label="Done!", state="complete")
+
+            # Percentile metrics
+            pct = result.get("percentiles", {})
+            if pct:
+                cols = st.columns(5)
+                labels = ["5th %ile", "25th %ile", "Median", "75th %ile", "95th %ile"]
+                keys   = ["p5", "p25", "p50", "p75", "p95"]
+                for col, key, lbl in zip(cols, keys, labels):
+                    val = pct.get(key, {})
+                    eq  = val.get("final_equity", val) if isinstance(val, dict) else val
+                    col.metric(lbl, f"{eq:,.0f}" if isinstance(eq, (int, float)) else str(eq))
+
+            # Percentile equity paths chart
+            sample_paths = result.get("sample_paths", [])
+            if sample_paths:
+                try:
+                    import numpy as np
+                    arr = np.array(sample_paths)
+                    chart_df = pd.DataFrame({
+                        "p5":     np.percentile(arr, 5,  axis=0),
+                        "p25":    np.percentile(arr, 25, axis=0),
+                        "median": np.percentile(arr, 50, axis=0),
+                        "p75":    np.percentile(arr, 75, axis=0),
+                        "p95":    np.percentile(arr, 95, axis=0),
+                    })
+                    st.subheader("Percentile Equity Paths")
+                    st.line_chart(chart_df, use_container_width=True)
+                except Exception:
+                    pass
+
+            st.code(_strip(report_text), language=None)
+
+            with st.expander("📋 Progress log"):
+                st.text(_strip(buf.getvalue()))
+
+        except Exception as exc:
+            st.error(f"Monte Carlo failed: {exc}")
+            with st.expander("📋 Progress log"):
+                st.text(_strip(buf.getvalue()))
+            st.exception(exc)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 8 — Reports
+# ══════════════════════════════════════════════════════════════════════════════
+
+with T_REP:
+    st.header("Saved Reports")
+    st.caption("All reports are auto-saved to reports/ after each scan or backtest.")
+
+    reports_dir = ROOT / "reports"
+    txt_files   = sorted(reports_dir.glob("*.txt"), reverse=True) if reports_dir.exists() else []
+
+    if not txt_files:
+        st.info("No saved reports yet. Run the Daily Scan or a Backtest to generate reports.")
+    else:
+        col_a, col_b = st.columns([1, 3])
+        with col_a:
+            selected_name = st.radio(
+                "Select report",
+                options=[f.name for f in txt_files],
+                label_visibility="collapsed",
+            )
+        with col_b:
+            selected_path = reports_dir / selected_name
+            content = selected_path.read_text(encoding="utf-8", errors="replace")
+
+            file_col, dl_col = st.columns([3, 1])
+            file_col.markdown(f"**{selected_name}**")
+            dl_col.download_button(
+                "⬇ Download",
+                data=content,
+                file_name=selected_name,
+                mime="text/plain",
+            )
+            st.code(content, language=None)
