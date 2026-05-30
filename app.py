@@ -80,7 +80,7 @@ with st.sidebar:
 
 # ── Tabs ───────────────────────────────────────────────────────────────────────
 
-T_SCAN, T_BT, T_LTB, T_LTS, T_WF, T_ST, T_MC, T_REP = st.tabs([
+T_SCAN, T_BT, T_LTB, T_LTS, T_WF, T_ST, T_MC, T_PORT, T_REP = st.tabs([
     "📊 Daily Scan",
     "📈 ST Backtest",
     "🏦 LT Backtest",
@@ -88,6 +88,7 @@ T_SCAN, T_BT, T_LTB, T_LTS, T_WF, T_ST, T_MC, T_REP = st.tabs([
     "🔄 Walk-Forward",
     "💪 Stress Tests",
     "🎲 Monte Carlo",
+    "💼 Portfolio",
     "📁 Reports",
 ])
 
@@ -173,6 +174,10 @@ with T_SCAN:
                             portfolio_data = json.loads(PORTFOLIO_FILE.read_text())
                         except Exception:
                             pass
+
+                    # Wire sidebar momentum-exit toggle into config before engine runs
+                    import config as _cfg
+                    _cfg.MOMENTUM_EXIT["ENABLED"] = momentum_exit_s
 
                     tuner  = AdaptiveTuner.load(str(TUNER_FILE))
                     engine = DecisionEngine(tuner=tuner)
@@ -434,18 +439,20 @@ with T_LTB:
             m4.metric("Sharpe",        f"{m.get('sharpe_ratio', 0):.3f}")
             m5.metric("Rebalances",    m.get("total_rebalances", "—"))
 
-            ec = result.get("equity_curve", [])
-            if ec:
+            ec = result.get("equity_curve")
+            if ec is not None and len(ec) > 0:
                 try:
-                    if isinstance(ec[0], dict):
-                        ec_df = pd.DataFrame(ec).set_index("date")
-                        ec_df.index = pd.to_datetime(ec_df.index)
-                        col = "equity" if "equity" in ec_df.columns else ec_df.columns[0]
+                    if isinstance(ec, pd.Series):
+                        # longterm backtest returns a pd.Series with datetime index
+                        chart_data = ec
+                    elif isinstance(ec, list) and isinstance(ec[0], dict):
+                        tmp = pd.DataFrame(ec).set_index("date")
+                        tmp.index = pd.to_datetime(tmp.index)
+                        chart_data = tmp["equity"] if "equity" in tmp.columns else tmp.iloc[:, 0]
                     else:
-                        ec_df = pd.DataFrame({"equity": ec})
+                        chart_data = pd.Series(ec)
                     st.subheader("Equity Curve")
-                    st.area_chart(ec_df[col] if isinstance(ec[0], dict) else ec_df["equity"],
-                                  use_container_width=True)
+                    st.area_chart(chart_data, use_container_width=True)
                 except Exception:
                     pass
 
@@ -745,7 +752,258 @@ with T_MC:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TAB 8 — Reports
+# TAB 8 — Portfolio
+# ══════════════════════════════════════════════════════════════════════════════
+
+_CURR_SYM = {"IN": "Rs ", "US": "$", "EU": "€"}
+_PORT_FILE = ROOT / "portfolio" / "positions.json"
+
+
+def _load_positions() -> list:
+    if not _PORT_FILE.exists():
+        return []
+    try:
+        return json.loads(_PORT_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+
+
+def _fetch_live_prices(tickers: list) -> dict:
+    """Fetch latest close price for each ticker via yfinance."""
+    import yfinance as yf
+    price_map = {}
+    if not tickers:
+        return price_map
+    try:
+        data = yf.download(tickers, period="3d", auto_adjust=True,
+                           progress=False, threads=True)
+        close = data["Close"] if "Close" in data.columns else data
+        for t in tickers:
+            try:
+                series = close[t] if t in close.columns else close
+                val = series.dropna().iloc[-1]
+                price_map[t] = float(val)
+            except Exception:
+                pass
+    except Exception:
+        # fallback: fetch one by one
+        for t in tickers:
+            try:
+                hist = yf.Ticker(t).history(period="3d")
+                if not hist.empty:
+                    price_map[t] = float(hist["Close"].iloc[-1])
+            except Exception:
+                pass
+    return price_map
+
+
+with T_PORT:
+    st.header("Portfolio — Open Positions")
+    st.caption("Live P&L, stop levels, and days held. Prices fetched from Yahoo Finance.")
+
+    positions = _load_positions()
+
+    if not positions:
+        st.info("No open positions found in portfolio/positions.json. "
+                "Run a Daily Scan to populate the portfolio.")
+    else:
+        # ── Refresh controls ─────────────────────────────────────────────────
+        btn_col, ts_col = st.columns([1, 4])
+        with btn_col:
+            do_refresh = st.button("🔄 Refresh Prices", type="primary", key="port_refresh")
+        with ts_col:
+            if "port_fetched_at" in st.session_state:
+                st.caption(f"Last fetched: {st.session_state['port_fetched_at']}")
+
+        tickers = [p["ticker"] for p in positions]
+
+        if do_refresh or "port_prices" not in st.session_state:
+            with st.spinner(f"Fetching live prices for {len(tickers)} tickers…"):
+                st.session_state["port_prices"]     = _fetch_live_prices(tickers)
+                st.session_state["port_fetched_at"] = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M")
+
+        price_map: dict = st.session_state.get("port_prices", {})
+
+        # ── Build rows ───────────────────────────────────────────────────────
+        today = pd.Timestamp.today().normalize()
+        rows  = []
+        for p in positions:
+            ticker     = p["ticker"]
+            market     = p.get("market", "US")
+            curr       = _CURR_SYM.get(market, "$")
+            entry_px   = float(p.get("entry_price", 0))
+            entry_date = pd.Timestamp(p.get("entry_date", "2000-01-01"))
+            shares     = int(p.get("shares", 0))
+            stop       = float(p.get("stop_loss", 0))
+            stop_init  = float(p.get("stop_loss_initial", stop))
+            cost       = float(p.get("cost", entry_px * shares))
+            peak_px    = float(p.get("peak_price", entry_px))
+            atr        = float(p.get("atr_at_entry", 0))
+            trail_mult = float(p.get("trail_mult", 5.0))
+            regime     = p.get("regime", "Normal")
+            days_held  = max((today - entry_date).days, 0)
+
+            cur_px = price_map.get(ticker)
+
+            if cur_px is not None:
+                cur_val   = shares * cur_px
+                pnl       = cur_val - cost
+                pnl_pct   = (cur_px - entry_px) / entry_px * 100 if entry_px else 0.0
+                init_risk = entry_px - stop_init
+                r_mult    = (cur_px - entry_px) / init_risk if init_risk > 0 else 0.0
+                stop_dist = (cur_px - stop) / cur_px * 100 if cur_px else 0.0
+
+                if cur_px <= stop:
+                    status = "🔴 STOP HIT"
+                elif stop_dist < 5.0:
+                    status = "🟡 Near stop"
+                else:
+                    status = "🟢 Safe"
+            else:
+                cur_val = pnl = pnl_pct = r_mult = stop_dist = None
+                status = "⚪ No price"
+
+            rows.append({
+                "status":     status,
+                "ticker":     ticker,
+                "market":     market,
+                "curr":       curr,
+                "sector":     p.get("sector", "Unknown"),
+                "entry_date": entry_date.strftime("%Y-%m-%d"),
+                "days_held":  days_held,
+                "entry_px":   entry_px,
+                "cur_px":     cur_px,
+                "stop":       stop,
+                "stop_dist":  stop_dist,
+                "shares":     shares,
+                "cost":       cost,
+                "cur_val":    cur_val,
+                "pnl":        pnl,
+                "pnl_pct":   pnl_pct,
+                "r_mult":     r_mult,
+                "regime":     regime,
+                "peak_px":    peak_px,
+                "atr":        atr,
+                "trail_mult": trail_mult,
+            })
+
+        # ── Summary metrics ──────────────────────────────────────────────────
+        priced   = [r for r in rows if r["pnl"] is not None]
+        total_pnl = sum(r["pnl"] for r in priced)
+        stop_hits = [r for r in rows if "STOP HIT" in r["status"]]
+        near_stps = [r for r in rows if "Near stop" in r["status"]]
+
+        # By-market cost breakdown
+        mkt_costs = {}
+        for r in rows:
+            mkt_costs[r["market"]] = mkt_costs.get(r["market"], 0) + r["cost"]
+        cost_str = "  |  ".join(
+            f"{m}: {_CURR_SYM.get(m,'$')}{v:,.0f}" for m, v in sorted(mkt_costs.items())
+        )
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Open Positions", len(positions))
+        m2.metric("Invested (by market)", cost_str if len(mkt_costs) == 1 else "↓ see below")
+        m3.metric("Unrealised P&L",
+                  f"{total_pnl:+,.0f}" if priced else "—",
+                  delta=f"{total_pnl/sum(r['cost'] for r in priced)*100:+.2f}%" if priced else None,
+                  delta_color="normal" if total_pnl >= 0 else "inverse")
+        m4.metric("Alerts",
+                  f"🔴 {len(stop_hits)} stop  🟡 {len(near_stps)} near",
+                  delta=None)
+
+        if len(mkt_costs) > 1:
+            st.caption("Invested: " + cost_str + "  *(mixed currencies — P&L totals are for reference only)*")
+
+        # Alert banners
+        if stop_hits:
+            st.error("**Stop breached — review immediately:** "
+                     + ", ".join(r["ticker"] for r in stop_hits))
+        if near_stps:
+            st.warning("**Within 5% of stop:** "
+                       + ", ".join(f"{r['ticker']} ({r['stop_dist']:.1f}%)" for r in near_stps))
+
+        st.markdown("---")
+
+        # ── Main table ───────────────────────────────────────────────────────
+        def _fmt(val, fmt=".2f", fallback="—"):
+            return format(val, fmt) if val is not None else fallback
+
+        table_rows = []
+        for r in rows:
+            table_rows.append({
+                "Status":       r["status"],
+                "Ticker":       r["ticker"],
+                "Mkt":          r["market"],
+                "Sector":       r["sector"],
+                "Entry Date":   r["entry_date"],
+                "Days":         r["days_held"],
+                "Entry Px":     r["entry_px"],
+                "Live Px":      r["cur_px"],
+                "Stop":         r["stop"],
+                "Stop Dist %":  r["stop_dist"],
+                "Shares":       r["shares"],
+                "P&L":          r["pnl"],
+                "P&L %":        r["pnl_pct"],
+                "R-Mult":       r["r_mult"],
+            })
+
+        tbl_df = pd.DataFrame(table_rows)
+
+        st.dataframe(
+            tbl_df,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Status":      st.column_config.TextColumn("Status", width="small"),
+                "Ticker":      st.column_config.TextColumn("Ticker", width="small"),
+                "Mkt":         st.column_config.TextColumn("Mkt",    width="small"),
+                "Days":        st.column_config.NumberColumn("Days",  format="%d"),
+                "Entry Px":    st.column_config.NumberColumn("Entry Px",   format="%.2f"),
+                "Live Px":     st.column_config.NumberColumn("Live Px",    format="%.2f"),
+                "Stop":        st.column_config.NumberColumn("Stop",       format="%.2f"),
+                "Stop Dist %": st.column_config.ProgressColumn(
+                                   "Stop Dist %", min_value=0, max_value=30, format="%.1f%%"),
+                "Shares":      st.column_config.NumberColumn("Shares",  format="%d"),
+                "P&L":         st.column_config.NumberColumn("P&L",     format="%+.0f"),
+                "P&L %":       st.column_config.NumberColumn("P&L %",   format="%+.2f%%"),
+                "R-Mult":      st.column_config.NumberColumn("R-Mult",  format="%+.2fR"),
+            },
+        )
+
+        # ── Per-position detail expanders ────────────────────────────────────
+        st.subheader("Position Detail")
+        for r in rows:
+            pnl_label = f"{r['pnl']:+,.0f}" if r["pnl"] is not None else "—"
+            r_label   = f"{r['r_mult']:+.2f}R" if r["r_mult"] is not None else "—"
+            with st.expander(
+                f"**{r['ticker']}** ({r['market']})  ·  {r['status']}  ·  "
+                f"P&L {pnl_label}  ·  {r_label}  ·  {r['days_held']}d held"
+            ):
+                c1, c2, c3 = st.columns(3)
+                with c1:
+                    st.metric("Entry Price",  f"{r['curr']}{r['entry_px']:,.2f}")
+                    st.metric("Live Price",   f"{r['curr']}{r['cur_px']:,.2f}"
+                                              if r["cur_px"] else "—")
+                    st.metric("Entry Date",   r["entry_date"])
+                with c2:
+                    st.metric("Stop Loss",    f"{r['curr']}{r['stop']:,.2f}")
+                    st.metric("Stop Cushion", f"{r['stop_dist']:.1f}%"
+                                              if r["stop_dist"] is not None else "—")
+                    st.metric("Peak Price",   f"{r['curr']}{r['peak_px']:,.2f}")
+                with c3:
+                    st.metric("ATR at Entry", f"{r['curr']}{r['atr']:.2f}")
+                    st.metric("Trail Stop",   f"{r['trail_mult']}× ATR")
+                    st.metric("Regime",       r["regime"])
+
+                st.caption(
+                    f"Shares: {r['shares']}  ·  Cost basis: {r['curr']}{r['cost']:,.0f}"
+                    + (f"  ·  Current value: {r['curr']}{r['cur_val']:,.0f}" if r["cur_val"] else "")
+                )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 9 — Reports
 # ══════════════════════════════════════════════════════════════════════════════
 
 with T_REP:
