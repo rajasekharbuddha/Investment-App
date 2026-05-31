@@ -196,6 +196,43 @@ with T_SCAN:
                         quality_scores=quality_scores if quality_filter_s else None,
                     )
 
+                # Save updated portfolio (held positions + new entries)
+                new_portfolio = list(result["held"])
+                for entry_info in result["new_entries"] + result["replacement_queue"]:
+                    ticker = entry_info["ticker"]
+                    close  = (float(data_map[ticker].iloc[-1]["Close"])
+                              if ticker in data_map else entry_info.get("price", 0))
+                    if entry_info.get("shares", 0) > 0:
+                        regime = entry_info.get("regime", {})
+                        new_portfolio.append({
+                            "ticker":            ticker,
+                            "market":            entry_info.get("market", "US"),
+                            "sector":            entry_info.get("sector", "Unknown"),
+                            "entry_price":       close,
+                            "entry_date":        today_ts.strftime("%Y-%m-%d"),
+                            "shares":            entry_info.get("shares", 0),
+                            "stop_loss":         entry_info.get("stop_price", close * 0.95),
+                            "stop_loss_initial": entry_info.get("stop_price", close * 0.95),
+                            "trail_mult":        entry_info.get("trail_mult", 5.0),
+                            "peak_price":        close,
+                            "atr_at_entry":      entry_info.get("atr", 0),
+                            "risk_pct":          (regime.get("risk_pct", 0.05)
+                                                  if isinstance(regime, dict) else 0.05),
+                            "regime":            (regime.get("label", "Normal")
+                                                  if isinstance(regime, dict) else "Normal"),
+                            "is_high_vol":       entry_info.get("is_high_vol", False),
+                            "cost":              entry_info.get("cost", 0),
+                        })
+                PORTFOLIO_FILE.parent.mkdir(exist_ok=True)
+                PORTFOLIO_FILE.write_text(json.dumps(new_portfolio, indent=2))
+                _n_held = len(result["held"])
+                _n_new  = len(result["new_entries"])
+                _n_repl = len(result["replacement_queue"])
+                _port_msg = f"Portfolio saved: {_n_held} held"
+                if _n_new:  _port_msg += f", +{_n_new} new"
+                if _n_repl: _port_msg += f", +{_n_repl} queued"
+                st.write(f"💾 {_port_msg}")
+
                 st.write("📝 Generating report…")
                 with contextlib.redirect_stdout(buf):
                     candidates = list(result["candidates"].values())
