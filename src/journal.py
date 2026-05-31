@@ -71,17 +71,12 @@ def _resolve_path():
 
 
 def _reflection(d: dict, regime: str, atr_pct: float) -> str:
-    parts = [f"Signal: {d['decision']}. {d.get('reason', '')}"]
+    parts = [f"Signal: ENTER. {d.get('reason', '')}"]
     qs = d.get("quality_score")
     if qs is not None:
         from stock_selector import grade
         parts.append(f"Quality score: {qs:.0f} ({grade(qs)})")
-    if d["decision"] == "NEAR":
-        parts.append(f"NEAR: {d.get('gates_passed','?')}/5 gates passed. Monitor for setup completion.")
-    if d["decision"] == "WAIT":
-        parts.append("TODO: Complete §7.5 fundamentals check before upgrading to ENTER.")
-    if d["decision"] == "ENTER":
-        parts.append("TODO: Verify earnings >5 days, macro calendar, bid-ask spread before ordering.")
+    parts.append("TODO: Verify earnings >5 days, macro calendar, bid-ask spread before ordering.")
     if regime == "High Vol":
         parts.append("High Vol regime: ATR×3 stop, 2% risk — position smaller than normal.")
     if atr_pct and atr_pct > 3.5:
@@ -101,10 +96,10 @@ def update_journal(decisions: list, watchlist: dict, markets: dict) -> str:
             f"      Copy your journal there or update JOURNAL_PATH in src/config.py"
         )
 
-    # Log ENTER, WAIT, and NEAR signals
-    signals = [d for d in decisions if d["decision"] in ("ENTER", "WAIT", "NEAR")]
+    # Log ENTER signals only — WAIT/NEAR are too numerous with dynamic universe
+    signals = [d for d in decisions if d["decision"] == "ENTER"]
     if not signals:
-        return "  [–] No ENTER/WAIT/NEAR signals today — nothing to log."
+        return "  [–] No ENTER signals today — nothing to log."
 
     today     = date.today()
     today_str = today.isoformat()
@@ -148,7 +143,7 @@ def update_journal(decisions: list, watchlist: dict, markets: dict) -> str:
             skipped.append(ticker)
             continue
 
-        # Normalise watchlist lookup
+        # Normalise watchlist lookup — candidate dict is ground truth for dynamic tickers
         if isinstance(next(iter(watchlist.values()), None), list):
             from config import get_sector, get_market
             info   = {"market": get_market(ticker), "sector": get_sector(ticker)}
@@ -156,8 +151,8 @@ def update_journal(decisions: list, watchlist: dict, markets: dict) -> str:
             sector = info["sector"]
         else:
             info   = watchlist.get(ticker, {})
-            market = info.get("market", "US")
-            sector = info.get("sector", "")
+            market = info.get("market", "") or d.get("market", "US")
+            sector = info.get("sector", "") or d.get("sector", "")
 
         m_info   = markets.get(market, {})
         currency = m_info.get("currency", "USD")
