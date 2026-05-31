@@ -59,6 +59,8 @@ Both modes are accessible from either the desktop GUI or the browser UI. All `sr
 - Per-position: live P&L, P&L %, R-multiple, stop cushion %, days held
 - Stop Dist % rendered as a visual progress bar in browser app
 - Alert banners: 🔴 STOP HIT / 🟡 Near stop (<5%) / 🟢 Safe
+- **4 regional sub-tabs** (Overview / US / EU / IN) — each regional tab shows single-currency totals; Overview shows counts per market
+- Long-term positions (added by LT Screener) flagged with `[LT]` badge and fundamental grade
 - Available in both desktop app (Portfolio tab) and browser app
 
 ### Short-Term Backtest
@@ -263,7 +265,16 @@ Two sub-tools in one tab:
 **Backtest** — quarterly momentum rebalancing backtest with configurable slots, rebalance interval, breakdown exit toggle, and momentum floor.
 
 ### Portfolio
-Live portfolio monitor — useful for daily review without running a full scan:
+Live portfolio monitor — split into **4 regional sub-tabs** so P&L totals are always in a single currency:
+
+| Sub-tab | Content |
+|---------|---------|
+| 🌍 Overview | All positions combined — position counts by region, pointer to regional tabs for financials |
+| 🇺🇸 US | US positions only — totals in USD |
+| 🇪🇺 EU | EU positions only — totals in EUR |
+| 🇮🇳 IN | IN positions only — totals in INR |
+
+A global alerts strip above the tabs shows stop hits and near-stop warnings across all regions.
 
 | Column | Description |
 |--------|-------------|
@@ -275,7 +286,7 @@ Live portfolio monitor — useful for daily review without running a full scan:
 | R× | R-multiples earned based on initial risk |
 | Days | Calendar days since entry |
 
-Click **Refresh Prices** to fetch live prices. Rows colour red for stop hit, yellow for near stop, green for safe. Details area below shows full per-position breakdown.
+Click **Refresh Prices** to fetch live prices. Rows colour red for stop hit, yellow for near stop, green for safe. Details area below each table shows full per-position breakdown. Long-term positions added by the LT Screener are marked `[LT]` and show their fundamental score and grade.
 
 ### Reports
 Lists all saved `.txt` report files in `reports/`. Click any file to view it.
@@ -316,7 +327,7 @@ Run historical and/or synthetic scenarios.
 Bootstraps a trades CSV from a previous backtest. Shows percentile equity path chart (p5 / p25 / median / p75 / p95) and a metrics row.
 
 ### Portfolio
-Live portfolio monitor — identical data to the desktop Portfolio tab, with a progress-bar Stop Dist % column and per-position expanders. Prices cached per session; click **Refresh Prices** to update.
+Live portfolio monitor with **4 regional sub-tabs** (Overview / US / EU / IN) — each regional tab shows single-currency totals so P&L figures are always meaningful. Alerts for stop hits and near-stop positions appear above the tabs. Progress-bar Stop Dist % column and per-position expanders. Long-term Screener entries are marked with an `[LT]` badge showing their fundamental grade and exit condition (SMA_200 cross). Prices cached per session; click **Refresh Prices** to update.
 
 ### Reports
 Browse and download all `.txt` reports saved by the scan and backtest runs.

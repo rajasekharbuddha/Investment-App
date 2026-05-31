@@ -54,6 +54,8 @@ Browser: click **Portfolio** tab → **Refresh Prices**
 
 This shows live prices for every open position and flags any stop hits or near-stop positions. Do this before checking new signals.
 
+The Portfolio tab has **4 sub-tabs** — start with the Overview for a full picture, then drill into the regional tab that matches your broker account (US / EU / IN) for single-currency P&L totals.
+
 ### Step 4 — Act on signals
 
 - **ENTER** → place the order (see [Recipe 3](#3-acting-on-an-enter-signal))
@@ -210,12 +212,24 @@ Edit `trail_mult` in positions.json for that position. The engine will use the n
 
 1. Click **Portfolio** tab
 2. Click **Refresh Prices** (fetches live Yahoo Finance prices)
-3. Read the colour-coded table:
-   - Red row → stop already breached — close the position today
-   - Yellow row → stop cushion < 5% — watch closely, tighten manually if needed
-   - Green → safe
+3. Check the **global alerts strip** at the top — red = stop hit somewhere, green = all safe
+4. Use the **4 sub-tabs** to review positions:
 
-Details area below the table shows full per-position breakdown: entry, live price, stop, P&L, R-multiple, ATR at entry, regime.
+| Sub-tab | Best used for |
+|---------|--------------|
+| 🌍 Overview | Quick count of positions by region; see alerts at a glance |
+| 🇺🇸 US | USD P&L total — matches your US brokerage account |
+| 🇪🇺 EU | EUR P&L total — matches your EU brokerage account |
+| 🇮🇳 IN | INR P&L total — matches your Zerodha / HDFC account |
+
+5. Read the colour-coded rows within each tab:
+   - **Red** → stop already breached — close the position today
+   - **Yellow** → stop cushion < 5% — watch closely, tighten manually if needed
+   - **Green** → safe
+
+Details area below each table shows full per-position breakdown: entry, live price, stop, P&L, R-multiple, ATR at entry, regime.
+
+Long-term positions added by the LT Screener show an `[LT]` marker and their fundamental grade. These use an 8× ATR trailing stop and exit on SMA_200 cross rather than the short-term 5.5× stop.
 
 ### What R-multiple tells you
 
@@ -504,6 +518,8 @@ C:\path\to\correct\python.exe -m pip install openpyxl
 ### Portfolio tab shows all dashes (no prices)
 
 Click **Refresh Prices** — prices are not fetched on load, only on demand. If refresh shows errors, yfinance may be rate-limited; wait 60 seconds and try again. The batch download falls back to per-ticker if any fail.
+
+Note: after clicking Refresh, check the **regional sub-tab** for your market (US / EU / IN) — the Overview sub-tab shows all positions but intentionally omits the combined cost/P&L total because currencies differ.
 
 ### positions.json is out of sync
 
