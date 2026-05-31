@@ -9,6 +9,9 @@ All strategy parameters here; no magic numbers elsewhere.
 
 from __future__ import annotations
 
+import os
+from pathlib import Path as _Path
+
 # =============================================================================
 # WATCHLIST  —  {market: [tickers]}  (fallback when dynamic universe disabled)
 # =============================================================================
@@ -354,8 +357,29 @@ REPORT: dict = {
 # =============================================================================
 # JOURNAL
 # =============================================================================
+def _journal_primary_path() -> str:
+    """Resolve the journal path cross-platform.
+    Checks JOURNAL_PATH env var first, then common OneDrive locations on
+    Windows and macOS, falling back to ~/Documents/."""
+    env = os.getenv("JOURNAL_PATH")
+    if env:
+        return env
+    candidates = [
+        # Windows OneDrive
+        _Path.home() / "OneDrive" / "Raj" / "Investments" / "Mastermind-Trading-Journal.xlsx",
+        # macOS OneDrive (consumer)
+        _Path.home() / "Library" / "CloudStorage" / "OneDrive-Personal" / "Raj" / "Investments" / "Mastermind-Trading-Journal.xlsx",
+        # Generic fallback
+        _Path.home() / "Documents" / "Mastermind-Trading-Journal.xlsx",
+    ]
+    for p in candidates:
+        if p.exists():
+            return str(p)
+    return str(candidates[0])  # return Windows path as default if none found
+
+
 JOURNAL: dict = {
-    "PRIMARY_PATH":   r"C:\Users\monik\OneDrive\Raj\Investments\Mastermind-Trading-Journal.xlsx",
+    "PRIMARY_PATH":   _journal_primary_path(),
     "FALLBACK_NAME":  "Mastermind-Trading-Journal.xlsx",
     "SHEET_SIGNALS":  "4. Trade Log",
     "SHEET_PNL":      "OpenPnL",

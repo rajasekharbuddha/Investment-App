@@ -5,12 +5,16 @@ Run this file to launch the GUI: python app.py
 """
 
 import sys
+import platform
 import queue
 import threading
 import re
 import json
 from pathlib import Path
 from datetime import datetime
+
+# Cross-platform monospace font: Menlo on macOS, Consolas on Windows/Linux
+_MONO = "Menlo" if platform.system() == "Darwin" else _MONO
 
 import pandas as pd
 
@@ -155,7 +159,7 @@ class App(tk.Tk):
         st.configure("TNotebook", background=self.BG2, borderwidth=0, tabmargins=0)
         st.configure("TNotebook.Tab",
                      background=self.SURFACE, foreground=self.MUTED,
-                     padding=[14, 7], font=("Consolas", 10))
+                     padding=[14, 7], font=(_MONO, 10))
         st.map("TNotebook.Tab",
                background=[("selected", self.BG)],
                foreground=[("selected", self.ACCENT)])
@@ -175,10 +179,10 @@ class App(tk.Tk):
         hdr.pack(fill="x")
         tk.Label(hdr, text="MASTERMIND PRO",
                  bg=self.BG2, fg=self.ACCENT,
-                 font=("Consolas", 17, "bold"), padx=20).pack(side="left")
+                 font=(_MONO, 17, "bold"), padx=20).pack(side="left")
         tk.Label(hdr, text="ATR-Dynamic Multi-Market Signal System",
                  bg=self.BG2, fg=self.MUTED,
-                 font=("Consolas", 10)).pack(side="left")
+                 font=(_MONO, 10)).pack(side="left")
 
         nb = ttk.Notebook(self)
         nb.pack(fill="both", expand=True)
@@ -202,7 +206,7 @@ class App(tk.Tk):
         self._status = tk.StringVar(value="Ready — select a tab to get started.")
         tk.Label(self, textvariable=self._status,
                  bg=self.BG2, fg=self.MUTED,
-                 font=("Consolas", 9), anchor="w", padx=12, pady=4
+                 font=(_MONO, 9), anchor="w", padx=12, pady=4
                  ).pack(fill="x", side="bottom")
 
     # ──────────────────────────────── TABS ───────────────────────────────────
@@ -212,10 +216,10 @@ class App(tk.Tk):
         bar.pack(fill="x")
 
         tk.Label(bar, text="Account:", bg=self.BG, fg=self.MUTED,
-                 font=("Consolas", 10)).pack(side="left")
+                 font=(_MONO, 10)).pack(side="left")
         self._acct_lbl = tk.Label(
             bar, text=f"€{self._settings['account_size']:,.0f}",
-            bg=self.BG, fg=self.ACCENT, font=("Consolas", 10, "bold"))
+            bg=self.BG, fg=self.ACCENT, font=(_MONO, 10, "bold"))
         self._acct_lbl.pack(side="left", padx=(4, 20))
 
         self._daily_markets = self._combo(bar, "Markets:",
@@ -231,7 +235,7 @@ class App(tk.Tk):
         tk.Checkbutton(bar, text="Quality filter", variable=self._daily_qf,
                        bg=self.BG, fg=self.MUTED, selectcolor=self.SURFACE,
                        activebackground=self.BG, activeforeground=self.ACCENT,
-                       font=("Consolas", 9)).pack(side="left", padx=(0, 8))
+                       font=(_MONO, 9)).pack(side="left", padx=(0, 8))
 
         self._daily_btn = self._button(bar, "▶  Run Daily Scan", self._run_daily)
         self._daily_btn.pack(side="left")
@@ -246,7 +250,7 @@ class App(tk.Tk):
 
         tk.Label(bar,
                  text="Score all tickers by momentum velocity, SMA50 trend distance, and composite grade.",
-                 bg=self.BG, fg=self.MUTED, font=("Consolas", 9)
+                 bg=self.BG, fg=self.MUTED, font=(_MONO, 9)
                  ).pack(side="left")
 
         self._univ_btn = self._button(bar, "▶  Score Universe", self._run_universe)
@@ -263,7 +267,7 @@ class App(tk.Tk):
         tk.Label(bar,
                  text="Enrich today's WAIT/ENTER/NEAR journal rows with sizing, "
                       "market-behaviour and Tier 3 reflection.",
-                 bg=self.BG, fg=self.MUTED, font=("Consolas", 9)
+                 bg=self.BG, fg=self.MUTED, font=(_MONO, 9)
                  ).pack(side="left")
 
         self._pt_btn = self._button(bar, "▶  Run Post-Trade Analysis", self._run_posttrade)
@@ -285,9 +289,9 @@ class App(tk.Tk):
 
         # Years label — auto-calculated; read-only display
         tk.Label(bar, text="Years:", bg=self.BG, fg=self.MUTED,
-                 font=("Consolas", 10)).pack(side="left")
+                 font=(_MONO, 10)).pack(side="left")
         self._bt_years_lbl = tk.Label(bar, text="—", bg=self.BG, fg=self.ACCENT,
-                                      font=("Consolas", 10, "bold"), width=5, anchor="w")
+                                      font=(_MONO, 10, "bold"), width=5, anchor="w")
         self._bt_years_lbl.pack(side="left", padx=(4, 16))
 
         # Trace start/end to auto-update the years label
@@ -322,13 +326,13 @@ class App(tk.Tk):
 
         tk.Label(left, text="Saved Reports",
                  bg=self.BG2, fg=self.ACCENT,
-                 font=("Consolas", 10, "bold"),
+                 font=(_MONO, 10, "bold"),
                  padx=8, pady=8).pack(anchor="w")
         self._button(left, "↻  Refresh", self._refresh_reports
                      ).pack(padx=8, pady=(0, 6), anchor="w")
 
         self._rpt_lb = tk.Listbox(
-            left, bg=self.BG, fg=self.TEXT, font=("Consolas", 9),
+            left, bg=self.BG, fg=self.TEXT, font=(_MONO, 9),
             selectbackground=self.SURFACE, selectforeground=self.ACCENT,
             relief="flat", bd=0, activestyle="none", highlightthickness=0)
         self._rpt_lb.pack(fill="both", expand=True, padx=2)
@@ -350,7 +354,7 @@ class App(tk.Tk):
         tk.Checkbutton(bar, text="Quality sort", variable=self._repl_qf,
                        bg=self.BG, fg=self.MUTED, selectcolor=self.SURFACE,
                        activebackground=self.BG, activeforeground=self.ACCENT,
-                       font=("Consolas", 9)).pack(side="left", padx=(0, 8))
+                       font=(_MONO, 9)).pack(side="left", padx=(0, 8))
 
         self._repl_btn = self._button(bar, "▶  Build Bench List", self._run_replacement)
         self._repl_btn.pack(side="left", padx=(8, 0))
@@ -372,13 +376,13 @@ class App(tk.Tk):
         tk.Checkbutton(bar, text="Include NEAR", variable=self._lt_near,
                        bg=self.BG, fg=self.MUTED, selectcolor=self.SURFACE,
                        activebackground=self.BG, activeforeground=self.ACCENT,
-                       font=("Consolas", 9)).pack(side="left", padx=(0, 8))
+                       font=(_MONO, 9)).pack(side="left", padx=(0, 8))
 
         self._lt_refresh = tk.BooleanVar(value=False)
         tk.Checkbutton(bar, text="Refresh cache", variable=self._lt_refresh,
                        bg=self.BG, fg=self.MUTED, selectcolor=self.SURFACE,
                        activebackground=self.BG, activeforeground=self.ACCENT,
-                       font=("Consolas", 9)).pack(side="left", padx=(0, 16))
+                       font=(_MONO, 9)).pack(side="left", padx=(0, 16))
 
         self._lt_btn = self._button(bar, "▶  Run Long-Term Screen", self._run_longterm)
         self._lt_btn.pack(side="left")
@@ -388,7 +392,7 @@ class App(tk.Tk):
         tk.Label(parent,
                  text="  Technical gates + Q-score pre-screen  ->  Fundamental scoring"
                       " (ROE, growth, D/E, FCF)  ->  Tiered report + Exit Watch per stock",
-                 bg=self.BG, fg=self.MUTED, font=("Consolas", 9), anchor="w"
+                 bg=self.BG, fg=self.MUTED, font=(_MONO, 9), anchor="w"
                  ).pack(fill="x", padx=14, pady=(0, 2))
 
         # ── Backtest control bar ──────────────────────────────────────────────
@@ -399,7 +403,7 @@ class App(tk.Tk):
         bar2.pack(fill="x")
 
         tk.Label(bar2, text="Backtest:", bg=self.BG, fg=self.ACCENT,
-                 font=("Consolas", 10, "bold")).pack(side="left", padx=(0, 10))
+                 font=(_MONO, 10, "bold")).pack(side="left", padx=(0, 10))
 
         today_str = datetime.now().strftime("%Y-%m-%d")
         self._ltbt_market = self._combo(bar2, "Market:", ["IN", "US", "EU"], "IN", 5)
@@ -417,7 +421,7 @@ class App(tk.Tk):
         tk.Checkbutton(bar2, text="Breakdown exit", variable=self._ltbt_breakdown,
                        bg=self.BG, fg=self.MUTED, selectcolor=self.SURFACE,
                        activebackground=self.BG, activeforeground=self.ACCENT,
-                       font=("Consolas", 9)).pack(side="left", padx=(0, 12))
+                       font=(_MONO, 9)).pack(side="left", padx=(0, 12))
 
         self._ltbt_btn = self._button(bar2, "▶  Run LT Backtest", self._run_lt_backtest)
         self._ltbt_btn.pack(side="left")
@@ -427,7 +431,7 @@ class App(tk.Tk):
         tk.Label(parent,
                  text="  Rebalance = rotate out of laggards.  Breakdown exit = sell on SMA_50 < SMA_200."
                       "  Mom.floor% = exit-watch signal: sell if avg momentum < N% (e.g. -5).  -99 = off.",
-                 bg=self.BG, fg=self.MUTED, font=("Consolas", 9), anchor="w",
+                 bg=self.BG, fg=self.MUTED, font=(_MONO, 9), anchor="w",
                  ).pack(fill="x", padx=14, pady=(0, 4))
 
         self._lt_out = self._terminal(parent)
@@ -440,10 +444,10 @@ class App(tk.Tk):
 
         tk.Label(bar, text="Open Positions — Live P&L",
                  bg=self.BG, fg=self.ACCENT,
-                 font=("Consolas", 11, "bold")).pack(side="left")
+                 font=(_MONO, 11, "bold")).pack(side="left")
 
         self._port_last = tk.Label(bar, text="", bg=self.BG, fg=self.MUTED,
-                                   font=("Consolas", 9))
+                                   font=(_MONO, 9))
         self._port_last.pack(side="right", padx=(0, 8))
 
         self._port_btn = self._button(bar, "↻  Refresh Prices", self._run_portfolio)
@@ -452,7 +456,7 @@ class App(tk.Tk):
         # Global alerts strip (above sub-tabs)
         self._port_alert_lbl = tk.Label(parent, text="",
                                         bg=self.BG2, fg=self.MUTED,
-                                        font=("Consolas", 9, "bold"),
+                                        font=(_MONO, 9, "bold"),
                                         anchor="w", padx=14, pady=4)
         self._port_alert_lbl.pack(fill="x")
 
@@ -460,11 +464,11 @@ class App(tk.Tk):
         pstyle = ttk.Style()
         pstyle.configure("Port.Treeview",
                          background=self.BG2, foreground=self.TEXT,
-                         fieldbackground=self.BG2, font=("Consolas", 9),
+                         fieldbackground=self.BG2, font=(_MONO, 9),
                          rowheight=22, borderwidth=0)
         pstyle.configure("Port.Treeview.Heading",
                          background=self.SURFACE, foreground=self.ACCENT,
-                         font=("Consolas", 9, "bold"), relief="flat")
+                         font=(_MONO, 9, "bold"), relief="flat")
         pstyle.map("Port.Treeview",
                    background=[("selected", self.SURFACE)],
                    foreground=[("selected", self.WHITE)])
@@ -499,15 +503,15 @@ class App(tk.Tk):
             smry.pack(fill="x")
 
             n_lbl = tk.Label(smry, text="Positions: —",
-                             bg=self.BG2, fg=self.TEXT, font=("Consolas", 9))
+                             bg=self.BG2, fg=self.TEXT, font=(_MONO, 9))
             n_lbl.pack(side="left", padx=(0, 20))
 
             cost_lbl = tk.Label(smry, text="Invested: —",
-                                bg=self.BG2, fg=self.TEXT, font=("Consolas", 9))
+                                bg=self.BG2, fg=self.TEXT, font=(_MONO, 9))
             cost_lbl.pack(side="left", padx=(0, 20))
 
             pnl_lbl = tk.Label(smry, text="P&L: —",
-                               bg=self.BG2, fg=self.MUTED, font=("Consolas", 9))
+                               bg=self.BG2, fg=self.MUTED, font=(_MONO, 9))
             pnl_lbl.pack(side="left")
 
             tv_frame = tk.Frame(frm, bg=self.BG, padx=8, pady=4)
@@ -535,7 +539,7 @@ class App(tk.Tk):
             sep.pack(fill="x", padx=8, pady=(4, 0))
 
             tk.Label(frm, text="  Per-position details — click Refresh to load live prices",
-                     bg=self.BG, fg=self.MUTED, font=("Consolas", 9), anchor="w"
+                     bg=self.BG, fg=self.MUTED, font=(_MONO, 9), anchor="w"
                      ).pack(fill="x", padx=8)
 
             out = self._terminal(frm)
@@ -830,7 +834,7 @@ class App(tk.Tk):
 
         tk.Label(f, text="Account & Risk Settings",
                  bg=self.BG, fg=self.ACCENT,
-                 font=("Consolas", 13, "bold")
+                 font=(_MONO, 13, "bold")
                  ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 18))
 
         self._sv: dict[str, tk.StringVar] = {}
@@ -854,11 +858,11 @@ class App(tk.Tk):
         ]
         for i, (lbl, key) in enumerate(numeric_rows, 1):
             tk.Label(f, text=lbl, bg=self.BG, fg=self.TEXT,
-                     font=("Consolas", 10), anchor="e"
+                     font=(_MONO, 10), anchor="e"
                      ).grid(row=i, column=0, sticky="e", padx=(0, 12), pady=5)
             sv = tk.StringVar(value=str(self._settings.get(key, 0)))
             tk.Entry(f, textvariable=sv, width=14,
-                     bg=self.SURFACE, fg=self.TEXT, font=("Consolas", 10),
+                     bg=self.SURFACE, fg=self.TEXT, font=(_MONO, 10),
                      insertbackground=self.TEXT, relief="flat", bd=6
                      ).grid(row=i, column=1, sticky="w", pady=5)
             self._sv[key] = sv
@@ -874,7 +878,7 @@ class App(tk.Tk):
         ]
         for j, (lbl, key) in enumerate(bool_rows):
             tk.Label(f, text=lbl, bg=self.BG, fg=self.TEXT,
-                     font=("Consolas", 10), anchor="e"
+                     font=(_MONO, 10), anchor="e"
                      ).grid(row=n + 1 + j, column=0, sticky="e", padx=(0, 12), pady=5)
             bv = tk.BooleanVar(value=bool(self._settings.get(key, False)))
             tk.Checkbutton(f, variable=bv,
@@ -888,15 +892,15 @@ class App(tk.Tk):
                      ).grid(row=save_row, column=1, sticky="w", pady=16)
 
         tk.Label(f, text="To add/remove stocks edit  src/config.py  directly.",
-                 bg=self.BG, fg=self.YELLOW, font=("Consolas", 9)
+                 bg=self.BG, fg=self.YELLOW, font=(_MONO, 9)
                  ).grid(row=save_row + 1, column=0, columnspan=2, sticky="w")
 
         tk.Label(f, text="Watchlist Preview:",
-                 bg=self.BG, fg=self.ACCENT, font=("Consolas", 10, "bold")
+                 bg=self.BG, fg=self.ACCENT, font=(_MONO, 10, "bold")
                  ).grid(row=save_row + 2, column=0, columnspan=2, sticky="w", pady=(20, 6))
 
         wl = tk.Text(f, height=18, width=72, bg=self.SURFACE, fg=self.TEXT,
-                     font=("Consolas", 9), relief="flat", state="disabled",
+                     font=(_MONO, 9), relief="flat", state="disabled",
                      wrap="none", highlightthickness=0)
         wl.grid(row=save_row + 3, column=0, columnspan=2, sticky="ew")
         self._fill_watchlist(wl)
@@ -909,7 +913,7 @@ class App(tk.Tk):
         inner = tk.Frame(outer, bg=self.BG2)
         inner.pack(fill="both", expand=True)
 
-        w = tk.Text(inner, bg=self.BG2, fg=self.TEXT, font=("Consolas", 10),
+        w = tk.Text(inner, bg=self.BG2, fg=self.TEXT, font=(_MONO, 10),
                     wrap="none", relief="flat", bd=0, state="disabled",
                     insertbackground=self.TEXT, highlightthickness=0)
         vsb = ttk.Scrollbar(inner, orient="vertical",   command=w.yview)
@@ -929,14 +933,14 @@ class App(tk.Tk):
         w.tag_configure("cyan",    foreground=self.CYAN)
         w.tag_configure("magenta", foreground=self.MAGENTA)
         w.tag_configure("white",   foreground=self.WHITE)
-        w.tag_configure("bold",    font=("Consolas", 10, "bold"))
+        w.tag_configure("bold",    font=(_MONO, 10, "bold"))
         return w
 
     def _button(self, parent, text, cmd, w=None) -> tk.Button:
         kw = dict(text=text, command=cmd,
                   bg=self.SURFACE, fg=self.ACCENT,
                   activebackground=self.BG2, activeforeground=self.ACCENT,
-                  font=("Consolas", 10), relief="flat", bd=0,
+                  font=(_MONO, 10), relief="flat", bd=0,
                   padx=12, pady=5, cursor="hand2")
         if w:
             kw["width"] = w
@@ -947,19 +951,19 @@ class App(tk.Tk):
 
     def _combo(self, parent, label, values, default, width) -> tk.StringVar:
         tk.Label(parent, text=label, bg=self.BG, fg=self.MUTED,
-                 font=("Consolas", 10)).pack(side="left")
+                 font=(_MONO, 10)).pack(side="left")
         sv = tk.StringVar(value=default)
         ttk.Combobox(parent, textvariable=sv, values=values,
-                     width=width, state="readonly", font=("Consolas", 10)
+                     width=width, state="readonly", font=(_MONO, 10)
                      ).pack(side="left", padx=(4, 16))
         return sv
 
     def _entry(self, parent, label, default, width) -> tk.StringVar:
         tk.Label(parent, text=label, bg=self.BG, fg=self.MUTED,
-                 font=("Consolas", 10)).pack(side="left")
+                 font=(_MONO, 10)).pack(side="left")
         sv = tk.StringVar(value=default)
         tk.Entry(parent, textvariable=sv, width=width,
-                 bg=self.SURFACE, fg=self.TEXT, font=("Consolas", 10),
+                 bg=self.SURFACE, fg=self.TEXT, font=(_MONO, 10),
                  insertbackground=self.TEXT, relief="flat", bd=4
                  ).pack(side="left", padx=(4, 16))
         return sv

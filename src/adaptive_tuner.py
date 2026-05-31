@@ -95,14 +95,14 @@ class AdaptiveTuner:
         return t
 
     def save(self, path: str = "tuner_state.json") -> None:
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             json.dump(self.to_dict(), f, indent=2)
 
     @classmethod
     def load(cls, path: str = "tuner_state.json") -> "AdaptiveTuner":
         if os.path.exists(path):
             try:
-                with open(path) as f:
+                with open(path, encoding="utf-8") as f:
                     return cls.from_dict(json.load(f))
             except Exception:
                 pass
