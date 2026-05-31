@@ -171,15 +171,89 @@ InvestmentApp/
 
 ## Installation
 
-**Requirements:** Python 3.10+ (tested on 3.14), Windows / macOS / Linux
+**Requirements:** Python 3.10+ (tested on 3.14) · Windows 10/11 · macOS 12+ · Ubuntu 20.04+
 
-```bash
-# Clone or download the project, then:
+---
+
+### Windows
+
+1. **Install Python** from [python.org](https://python.org) — check **"Add Python to PATH"** during setup.
+2. **Clone or download** the project.
+3. Open **Command Prompt** or **PowerShell** in the project folder:
+
+```powershell
 cd InvestmentApp
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
 
-`requirements.txt`:
+> **Multiple Python installs?** Use `python -m pip` (not bare `pip`) to guarantee packages land in the same interpreter that runs the app. If `python` opens the Windows Store, run `python3` instead or use the full path: `C:\Path\To\python.exe -m pip install -r requirements.txt`.
+
+Tkinter is bundled with the official Windows Python installer — no extra step needed.
+
+---
+
+### macOS
+
+1. **Install Python 3.10+** — recommended via [python.org](https://python.org) installer or Homebrew:
+
+```bash
+brew install python@3.12
+```
+
+2. **Clone or download** the project, then:
+
+```bash
+cd InvestmentApp
+python3 -m pip install -r requirements.txt
+```
+
+Tkinter is included with the python.org macOS installer. If you installed via Homebrew:
+
+```bash
+brew install python-tk@3.12   # match your Python version
+```
+
+**Journal path:** The app auto-detects OneDrive on macOS at `~/Library/CloudStorage/OneDrive-Personal/`. If your OneDrive layout differs, set the path explicitly:
+
+```bash
+export JOURNAL_PATH="$HOME/path/to/Mastermind-Trading-Journal.xlsx"
+```
+
+Add that line to `~/.zshrc` (or `~/.bash_profile`) to make it permanent.
+
+---
+
+### Linux (Ubuntu / Debian)
+
+1. **Install Python and Tkinter:**
+
+```bash
+sudo apt update
+sudo apt install python3 python3-pip python3-tk
+```
+
+For Fedora / RHEL:
+```bash
+sudo dnf install python3 python3-pip python3-tkinter
+```
+
+2. **Clone or download** the project, then:
+
+```bash
+cd InvestmentApp
+pip3 install -r requirements.txt
+```
+
+**Journal path:** Set via environment variable (no OneDrive auto-detect on Linux):
+
+```bash
+export JOURNAL_PATH="$HOME/path/to/Mastermind-Trading-Journal.xlsx"
+```
+
+---
+
+### Python packages installed
+
 ```
 yfinance>=0.2.40
 pandas>=2.0
@@ -190,27 +264,26 @@ requests>=2.31
 streamlit>=1.35
 ```
 
-Tkinter is included with the standard Python distribution. On Linux it may need:
-```bash
-sudo apt-get install python3-tk
-```
-
-> **Windows note:** If you have multiple Python installs, ensure `pip install` targets the same interpreter that runs `app.py`. Run `python -m pip install -r requirements.txt` to be sure.
-
 ---
 
 ## Quick Start
 
 ### Desktop app (Tkinter)
-```bash
-python app.py
-```
+
+| OS | Command |
+|----|---------|
+| Windows | `python app.py` |
+| macOS | `python3 app.py` |
+| Linux | `python3 app.py` |
 
 ### Browser app (Streamlit)
-```bash
-streamlit run app_web.py
-# Opens automatically at http://localhost:8501
-```
+
+| OS | Command |
+|----|---------|
+| Windows | `python -m streamlit run app_web.py` |
+| macOS / Linux | `streamlit run app_web.py` |
+
+Opens automatically at **http://localhost:8501**. If the browser doesn't open, navigate there manually.
 
 ### CLI — daily scan
 ```bash
@@ -238,6 +311,8 @@ python src/run_backtest_longterm.py --market IN --start 2015-01-01
 python src/run_backtest_longterm.py --market IN --slots 10 --rebalance 63 --momentum-floor -5
 python src/run_backtest_longterm.py --no-breakdown --momentum-floor -99
 ```
+
+> **macOS / Linux:** Replace `python` with `python3` in all CLI commands if `python` is not aliased to Python 3 on your system.
 
 ---
 

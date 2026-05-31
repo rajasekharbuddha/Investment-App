@@ -6,20 +6,212 @@ Practical step-by-step recipes for every workflow. Read the README for reference
 
 ## Table of Contents
 
-1. [Daily Morning Routine](#1-daily-morning-routine)
-2. [Reading the Scan Output](#2-reading-the-scan-output)
-3. [Acting on an ENTER Signal](#3-acting-on-an-enter-signal)
-4. [Managing Open Positions](#4-managing-open-positions)
-5. [Checking Portfolio Health](#5-checking-portfolio-health)
-6. [Running a Backtest](#6-running-a-backtest)
-7. [Long-Term Screener](#7-long-term-screener)
-8. [Setting Up the Journal](#8-setting-up-the-journal)
-9. [Changing Markets or Universe Size](#9-changing-markets-or-universe-size)
-10. [Troubleshooting](#10-troubleshooting)
+1. [First-Time Setup — Windows](#1-first-time-setup--windows)
+2. [First-Time Setup — macOS](#2-first-time-setup--macos)
+3. [First-Time Setup — Linux](#3-first-time-setup--linux)
+4. [Daily Morning Routine](#4-daily-morning-routine)
+5. [Reading the Scan Output](#5-reading-the-scan-output)
+6. [Acting on an ENTER Signal](#6-acting-on-an-enter-signal)
+7. [Managing Open Positions](#7-managing-open-positions)
+8. [Checking Portfolio Health](#8-checking-portfolio-health)
+9. [Running a Backtest](#9-running-a-backtest)
+10. [Long-Term Screener](#10-long-term-screener)
+11. [Setting Up the Journal](#11-setting-up-the-journal)
+12. [Changing Markets or Universe Size](#12-changing-markets-or-universe-size)
+13. [Troubleshooting](#13-troubleshooting)
 
 ---
 
-## 1. Daily Morning Routine
+## 1. First-Time Setup — Windows
+
+**Goal:** Get the app running on a Windows 10/11 machine from scratch.
+
+### Step 1 — Install Python
+
+Download the latest Python 3.12 or 3.14 installer from [python.org](https://python.org/downloads).
+
+During installation, **check "Add Python to PATH"** — without this, the `python` command won't work in the terminal.
+
+Verify:
+```powershell
+python --version   # should print Python 3.12.x or newer
+```
+
+### Step 2 — Get the project
+
+```powershell
+git clone https://github.com/rajasekharbuddha/Investment-App.git InvestmentApp
+cd InvestmentApp
+```
+
+Or download the ZIP from GitHub and extract it.
+
+### Step 3 — Install dependencies
+
+```powershell
+python -m pip install -r requirements.txt
+```
+
+> Use `python -m pip` (not bare `pip`) to guarantee packages go into the same Python that runs the app. If you have multiple Python versions installed, check with `where python` and use the full path if needed: `C:\Python312\python.exe -m pip install -r requirements.txt`
+
+### Step 4 — Launch
+
+```powershell
+# Desktop app
+python app.py
+
+# Browser app
+python -m streamlit run app_web.py
+```
+
+### Step 5 — Set up the journal (optional)
+
+The journal path auto-detects your OneDrive location. If it doesn't find the file, set it explicitly:
+
+```powershell
+$env:JOURNAL_PATH = "C:\Users\YourName\OneDrive\Investments\Mastermind-Trading-Journal.xlsx"
+python app.py
+```
+
+To make this permanent, add the variable in **System Properties → Environment Variables**.
+
+---
+
+## 2. First-Time Setup — macOS
+
+**Goal:** Get the app running on a Mac (Apple Silicon or Intel).
+
+### Step 1 — Install Python
+
+**Option A — python.org installer (recommended):**
+Download Python 3.12+ from [python.org](https://python.org/downloads/macos). The installer bundles Tkinter.
+
+**Option B — Homebrew:**
+```bash
+brew install python@3.12
+brew install python-tk@3.12   # Tkinter is separate in Homebrew
+```
+
+Verify:
+```bash
+python3 --version   # Python 3.12.x or newer
+```
+
+### Step 2 — Get the project
+
+```bash
+git clone https://github.com/rajasekharbuddha/Investment-App.git InvestmentApp
+cd InvestmentApp
+```
+
+### Step 3 — Install dependencies
+
+```bash
+python3 -m pip install -r requirements.txt
+```
+
+### Step 4 — Set up the journal path (if using OneDrive)
+
+The app automatically looks for your journal at:
+`~/Library/CloudStorage/OneDrive-Personal/Raj/Investments/Mastermind-Trading-Journal.xlsx`
+
+If your OneDrive is mounted at a different path, set it once:
+
+```bash
+# Add to ~/.zshrc (macOS default shell)
+echo 'export JOURNAL_PATH="$HOME/Library/CloudStorage/OneDrive-Personal/Raj/Investments/Mastermind-Trading-Journal.xlsx"' >> ~/.zshrc
+source ~/.zshrc
+```
+
+### Step 5 — Launch
+
+```bash
+# Desktop app
+python3 app.py
+
+# Browser app
+streamlit run app_web.py
+# or: python3 -m streamlit run app_web.py
+```
+
+> **Apple Silicon (M1/M2/M3):** All dependencies (yfinance, pandas, numpy, streamlit) have native ARM wheels. No Rosetta required.
+
+---
+
+## 3. First-Time Setup — Linux
+
+**Goal:** Get the app running on Ubuntu, Debian, or Fedora.
+
+### Step 1 — Install Python and Tkinter
+
+**Ubuntu / Debian:**
+```bash
+sudo apt update
+sudo apt install python3 python3-pip python3-venv python3-tk git
+```
+
+**Fedora / RHEL / CentOS:**
+```bash
+sudo dnf install python3 python3-pip python3-tkinter git
+```
+
+Verify:
+```bash
+python3 --version
+```
+
+### Step 2 — Get the project
+
+```bash
+git clone https://github.com/rajasekharbuddha/Investment-App.git InvestmentApp
+cd InvestmentApp
+```
+
+### Step 3 — (Recommended) Create a virtual environment
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+Activate the venv each session with `source .venv/bin/activate`, or add it to your shell profile.
+
+Without a venv:
+```bash
+pip3 install -r requirements.txt
+# or: python3 -m pip install -r requirements.txt
+```
+
+### Step 4 — Set up the journal path
+
+No OneDrive auto-detection on Linux. Set the path explicitly:
+
+```bash
+# Add to ~/.bashrc or ~/.zshrc
+echo 'export JOURNAL_PATH="$HOME/path/to/Mastermind-Trading-Journal.xlsx"' >> ~/.bashrc
+source ~/.bashrc
+```
+
+If you skip this, the journal falls back to `reports/Mastermind-Trading-Journal.xlsx` inside the project folder.
+
+### Step 5 — Launch
+
+```bash
+# Desktop app (requires a display server — X11 or Wayland)
+python3 app.py
+
+# Browser app (works headless — no display required)
+streamlit run app_web.py
+```
+
+> **Headless server / no GUI:** The browser app (`app_web.py`) runs fine without a display. The desktop app (`app.py`) requires Tkinter and a display. On a headless server, use the browser app only.
+
+> **WSL (Windows Subsystem for Linux):** WSL2 with WSLg supports Tkinter GUIs directly. Make sure `python3-tk` is installed inside WSL.
+
+---
+
+## 4. Daily Morning Routine
 
 **Goal:** Know what to buy, what to hold, and what is near a stop — in under 5 minutes.
 
@@ -58,14 +250,14 @@ The Portfolio tab has **4 sub-tabs** — start with the Overview for a full pict
 
 ### Step 4 — Act on signals
 
-- **ENTER** → place the order (see [Recipe 3](#3-acting-on-an-enter-signal))
+- **ENTER** → place the order (see [Recipe 6](#6-acting-on-an-enter-signal))
 - **NEAR** → add to watchlist, monitor tomorrow
 - **WAIT** → ignore today, the gate that failed is shown in the reason
 - **STOP HIT** in Portfolio → close the position, update positions.json
 
 ---
 
-## 2. Reading the Scan Output
+## 5. Reading the Scan Output
 
 A typical output block looks like:
 
@@ -119,7 +311,7 @@ A typical output block looks like:
 
 ---
 
-## 3. Acting on an ENTER Signal
+## 6. Acting on an ENTER Signal
 
 ### What the engine already calculated for you
 
@@ -168,7 +360,7 @@ The engine recalculates the trailing stop every day during the scan. The updated
 
 ---
 
-## 4. Managing Open Positions
+## 7. Managing Open Positions
 
 ### How positions.json works
 
@@ -206,7 +398,7 @@ Edit `trail_mult` in positions.json for that position. The engine will use the n
 
 ---
 
-## 5. Checking Portfolio Health
+## 8. Checking Portfolio Health
 
 ### Desktop app — Portfolio tab
 
@@ -254,7 +446,7 @@ To tighten: edit `trail_mult` in positions.json from 5.5 to e.g. 4.0, or edit `s
 
 ---
 
-## 6. Running a Backtest
+## 9. Running a Backtest
 
 ### Short-term ATR-Dynamic backtest
 
@@ -306,14 +498,15 @@ python src/run_backtest_longterm.py --market IN --start 2015-01-01 --slots 10 --
 Run this to confirm the strategy is not curve-fitted:
 
 ```bash
-python src/run_walkforward.py --market IN --years 10 --train 3 --test 1
+python src/run_walkforward.py --market IN --years 5 --train 504 --test 126
+# 504 trading days = ~2yr train, 126 = ~6mo test
 ```
 
-Each fold trains on 3 years and tests on 1. If out-of-sample Sharpe is consistently > 0.5, the strategy generalises.
+Each fold trains on 2 years and tests on 6 months. If out-of-sample Sharpe is consistently > 0.5, the strategy generalises.
 
 ---
 
-## 7. Long-Term Screener
+## 10. Long-Term Screener
 
 Identifies fundamentally strong stocks for multi-month to multi-year holds.
 
@@ -352,7 +545,7 @@ The Exit Watch block is computed fresh each time you run the screener. Review it
 
 ---
 
-## 8. Setting Up the Journal
+## 11. Setting Up the Journal
 
 The journal writes ENTER signals to an Excel file after each daily scan.
 
@@ -414,7 +607,7 @@ Only **ENTER** signals are logged (one row per ticker per day). If you run the s
 
 ---
 
-## 9. Changing Markets or Universe Size
+## 12. Changing Markets or Universe Size
 
 ### Switch to India-only scanning
 
@@ -481,7 +674,7 @@ RISK    = {"MAX_POSITION_SIZE_PCT": 0.20}
 
 ---
 
-## 10. Troubleshooting
+## 13. Troubleshooting
 
 ### Scan takes very long
 
