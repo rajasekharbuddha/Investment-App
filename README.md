@@ -51,14 +51,15 @@ Both modes are accessible from either the desktop GUI or the browser UI. All `sr
 - ATR-based position sizing with per-regime risk percentages
 - Momentum exit timer: ejects positions whose momentum turns negative before the trailing stop fires
 - Adaptive tuner: automatically loosens or tightens gate thresholds based on signal density
+- **Auto-saves portfolio** after every scan — `positions.json` reflects entries, exits, and held positions immediately
 
-### Portfolio Monitor *(browser app)*
-- Loads open positions from `portfolio/positions.json`
-- Fetches live prices via Yahoo Finance (cached per session, refresh on demand)
+### Portfolio Monitor
+- Loads open positions from `portfolio/positions.json` (auto-updated after each scan)
+- Fetches live prices via Yahoo Finance — batch download with per-ticker fallback
 - Per-position: live P&L, P&L %, R-multiple, stop cushion %, days held
-- Stop Dist % rendered as a visual progress bar — shorter = closer to stop
+- Stop Dist % rendered as a visual progress bar in browser app
 - Alert banners: 🔴 STOP HIT / 🟡 Near stop (<5%) / 🟢 Safe
-- Detail expanders: ATR at entry, trail multiplier, peak price, regime
+- Available in both desktop app (Portfolio tab) and browser app
 
 ### Short-Term Backtest
 - Tick-by-tick simulation using the same DecisionEngine as the live scan
@@ -103,7 +104,9 @@ Both modes are accessible from either the desktop GUI or the browser UI. All `sr
 
 ### Reports & Journal
 - All scan and backtest outputs saved to `reports/` as plain-text files
-- Excel trading journal integration via openpyxl (writes signals to configured sheet)
+- Excel trading journal integration via openpyxl
+- **Logs ENTER signals only** — WAIT/NEAR are too numerous with dynamic universe enabled (~200 tickers per market)
+- Deduplicates: skips tickers already logged today
 
 ---
 
@@ -111,7 +114,7 @@ Both modes are accessible from either the desktop GUI or the browser UI. All `sr
 
 ```
 InvestmentApp/
-├── app.py                    # Tkinter desktop GUI — 7 tabs
+├── app.py                    # Tkinter desktop GUI — 9 tabs
 ├── app_web.py                # Streamlit browser app — 9 tabs
 ├── .streamlit/
 │   └── config.toml           # Streamlit config (skips email prompt, sets port 8501)
@@ -137,7 +140,7 @@ InvestmentApp/
 │   ├── walk_forward.py       # Walk-forward optimisation
 │   ├── monte_carlo.py        # Monte Carlo simulation
 │   ├── post_trade.py         # Post-trade journal enrichment
-│   ├── journal.py            # Excel journal writer
+│   ├── journal.py            # Excel journal writer (ENTER signals only)
 │   ├── run_daily.py          # CLI: daily scan
 │   ├── run_backtest.py       # CLI: short-term backtest
 │   ├── run_backtest_longterm.py  # CLI: long-term backtest
@@ -158,7 +161,7 @@ InvestmentApp/
 │   └── EU_ftsemib.csv
 ├── reports/                  # Saved scan and backtest reports
 ├── portfolio/
-│   └── positions.json        # Current open positions
+│   └── positions.json        # Current open positions (auto-updated after scan)
 └── requirements.txt
 ```
 
@@ -189,6 +192,8 @@ Tkinter is included with the standard Python distribution. On Linux it may need:
 ```bash
 sudo apt-get install python3-tk
 ```
+
+> **Windows note:** If you have multiple Python installs, ensure `pip install` targets the same interpreter that runs `app.py`. Run `python -m pip install -r requirements.txt` to be sure.
 
 ---
 
@@ -236,32 +241,50 @@ python src/run_backtest_longterm.py --no-breakdown --momentum-floor -99
 
 ## Desktop App Tabs
 
-Launch with `python app.py`.
+Launch with `python app.py`. Nine tabs across the top.
 
 ### Daily Scan
-Select markets (US / EU / IN / All), enable dynamic universe or quality filter, and run the live signal scan. Output shows ENTER / NEAR / WAIT / SKIP decisions with ATR, stop levels, and position sizing. Results are saved to `reports/daily-DATE.txt`.
+Select markets (US / EU / IN / All), an as-of date (today or a past date for historical simulation), and optional quality filter. Runs the live signal scan. Output shows ENTER / NEAR / WAIT / SKIP decisions with ATR, gate details, stop levels, and position sizing. Portfolio is auto-saved and journal is updated after each run.
+
+### Universe
+Scores every ticker in the configured universe by momentum velocity, SMA_50 trend distance, and composite grade. Useful for seeing which stocks are building momentum before they trigger a full ENTER signal.
+
+### Post-Trade
+Enriches today's journal rows (WAIT / ENTER / NEAR) with position sizing details, market-behaviour context, and Tier 3 reflection notes. Run once after the daily scan.
 
 ### Backtest
-Configure market, date range, equity, and commission. Runs the full ATR-Dynamic short-term strategy simulation. Output includes equity curve (ASCII chart), year-by-year returns vs benchmark, trade statistics, max drawdown, and Sharpe/Sortino ratios.
+Configure market, date range, and equity. Runs the full ATR-Dynamic short-term strategy simulation. Output includes equity curve, year-by-year returns vs benchmark, trade statistics, max drawdown, and Sharpe/Sortino ratios.
 
-### Walk-Forward
-Set training and test window lengths. Optimises gate parameters (SMA distance, volume multiplier, RSI bounds, MACD threshold) on rolling in-sample windows and reports out-of-sample performance per fold.
-
-### Stress Tests
-Run the portfolio through the three historical crisis windows (2008, 2020, 2022) and four synthetic shock scenarios.
-
-### Monte Carlo
-Set number of simulations and shock parameters. Bootstraps the backtest trade log N times and shows the percentile distribution of final equity, CAGR, and max drawdown.
-
-### Long-Term Investment
+### Long-Term
 Two sub-tools in one tab:
 
 **Screener** — fundamental + technical quality screener. Produces a tiered report (BUY / NEAR / WATCH) with Q-scores, red-flag alerts, and an Exit Watch block per stock.
 
 **Backtest** — quarterly momentum rebalancing backtest with configurable slots, rebalance interval, breakdown exit toggle, and momentum floor.
 
+### Portfolio
+Live portfolio monitor — useful for daily review without running a full scan:
+
+| Column | Description |
+|--------|-------------|
+| Status | STOP HIT / NEAR STOP / Safe |
+| Live Px | Current price from Yahoo Finance |
+| Stop | Current trailing stop level |
+| Dist% | Distance to stop as a percentage |
+| P&L / P&L% | Unrealised gain/loss vs cost |
+| R× | R-multiples earned based on initial risk |
+| Days | Calendar days since entry |
+
+Click **Refresh Prices** to fetch live prices. Rows colour red for stop hit, yellow for near stop, green for safe. Details area below shows full per-position breakdown.
+
 ### Reports
-Lists all saved `.txt` report files in `reports/`. Click any file to view it in the terminal panel.
+Lists all saved `.txt` report files in `reports/`. Click any file to view it.
+
+### Bench List
+Builds a ranked replacement candidate list — stocks that are almost ready to enter and could replace an exiting position. Configure market and top-N count.
+
+### Settings
+Adjust account size, position limits, risk parameters, momentum periods, and universe size without editing code. Changes persist to `app_settings.json`.
 
 ---
 
@@ -271,43 +294,31 @@ Launch with `streamlit run app_web.py` → open **http://localhost:8501**.
 
 Sidebar controls (equity, commission, slippage, strategy flags) apply to every tab.
 
-### 📊 Daily Scan
-Same pipeline as the desktop app. Real-time step-by-step progress via `st.status()`. Summary metrics bar shows ENTER / NEAR counts and tuner mode after the run.
+### Daily Scan
+Same pipeline as the desktop app. Real-time step-by-step progress. Summary metrics bar shows ENTER / NEAR counts and tuner mode. Portfolio is auto-saved after the run.
 
-### 📈 ST Backtest
-ATR-Dynamic short-term backtest. Renders an **interactive equity curve chart** after the run. Includes a **Download Trades CSV** button.
+### ST Backtest
+ATR-Dynamic short-term backtest. Renders an interactive equity curve chart. Includes a **Download Trades CSV** button.
 
-### 🏦 LT Backtest
+### LT Backtest
 Long-term quarterly rebalancing backtest. Interactive equity curve chart. Configurable rebalance interval (monthly / quarterly / semi-annual / annual), momentum floor, and SMA breakdown exit toggle.
 
-### 🔭 LT Screener
+### LT Screener
 Fundamental screener. Full tiered output (BUY / NEAR / WATCH) with Exit Watch blocks per stock.
 
-### 🔄 Walk-Forward
+### Walk-Forward
 Rolling optimisation. Configure train/test window size and anchored vs rolling mode.
 
-### 💪 Stress Tests
-Run historical and/or synthetic scenarios. Select All / Historical only / Synthetic only.
+### Stress Tests
+Run historical and/or synthetic scenarios.
 
-### 🎲 Monte Carlo
-Bootstraps a trades CSV from a previous backtest. Shows **percentile equity path chart** (p5 / p25 / median / p75 / p95) and a metrics row. Pick any saved trades file from the dropdown.
+### Monte Carlo
+Bootstraps a trades CSV from a previous backtest. Shows percentile equity path chart (p5 / p25 / median / p75 / p95) and a metrics row.
 
-### 💼 Portfolio
-Live portfolio monitor — the most useful tab for daily review:
+### Portfolio
+Live portfolio monitor — identical data to the desktop Portfolio tab, with a progress-bar Stop Dist % column and per-position expanders. Prices cached per session; click **Refresh Prices** to update.
 
-| Column | Description |
-|--------|-------------|
-| Status | 🔴 STOP HIT / 🟡 Near stop / 🟢 Safe |
-| Live Px | Current price from Yahoo Finance |
-| Stop | Current trailing stop level |
-| Stop Dist % | Distance to stop as a progress bar |
-| P&L / P&L % | Unrealised gain/loss vs cost basis |
-| R-Mult | R-multiples earned (based on initial stop risk) |
-| Days | Calendar days since entry |
-
-Alert banners appear at the top for any stop breach or near-stop position. Prices are fetched in batch and cached in the session — click **🔄 Refresh Prices** to update. Expand any row for ATR, trail multiplier, peak price, and regime detail.
-
-### 📁 Reports
+### Reports
 Browse and download all `.txt` reports saved by the scan and backtest runs.
 
 ---
@@ -318,7 +329,7 @@ All CLI runners live in `src/` and support `--help` for full argument lists.
 
 | Script | Purpose | Key Arguments |
 |--------|---------|---------------|
-| `run_daily.py` | Daily signal scan | `--markets`, `--dynamic`, `--quality-filter`, `--top-n`, `--skip-journal` |
+| `run_daily.py` | Daily signal scan | `--markets`, `--dynamic`, `--quality-filter`, `--top-n`, `--skip-journal`, `--asof` |
 | `run_backtest.py` | Short-term backtest | `--market`, `--start`, `--end`, `--equity`, `--no-dynamic` |
 | `run_backtest_longterm.py` | Long-term backtest | `--market`, `--start`, `--end`, `--slots`, `--rebalance`, `--no-breakdown`, `--momentum-floor` |
 | `run_longterm.py` | Long-term screener | `--markets`, `--no-near`, `--min-q`, `--top-n-in` |
@@ -435,6 +446,12 @@ MOMENTUM_EXIT = {
 RANKING = {
     "MOMENTUM_PERIODS": [14, 30, 63],  # 3W / 6W / 3M
 }
+
+JOURNAL = {
+    "PRIMARY_PATH": r"C:\Users\monik\OneDrive\Raj\Investments\Mastermind-Trading-Journal.xlsx",
+    "SHEET_SIGNALS": "4. Trade Log",
+    "DATA_START_ROW": 6,
+}
 ```
 
 The desktop app Settings tab and the browser app sidebar expose the most commonly changed parameters and persist them to `app_settings.json`.
@@ -448,7 +465,7 @@ data/                   Parquet-cached price data (populated on first run)
 universes/              Index constituent CSVs used by dynamic universe builder
 reports/                Auto-saved scan and backtest output files
 portfolio/
-  positions.json        Active paper portfolio positions
+  positions.json        Active paper portfolio (auto-updated after every scan)
 .streamlit/
   config.toml           Streamlit server config (port 8501, no usage stats prompt)
 tuner_state.json        Adaptive tuner state (persists between runs)
