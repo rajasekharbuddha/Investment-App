@@ -878,6 +878,7 @@ with T_PORT:
             atr        = float(p.get("atr_at_entry", 0))
             trail_mult = float(p.get("trail_mult", 5.0))
             regime     = p.get("regime", "Normal")
+            strategy   = p.get("strategy", "")
             days_held  = max((today - entry_date).days, 0)
 
             cur_px = price_map.get(ticker)
@@ -922,121 +923,160 @@ with T_PORT:
                 "peak_px":    peak_px,
                 "atr":        atr,
                 "trail_mult": trail_mult,
+                "strategy":   strategy,
+                "lt_combined": p.get("lt_combined"),
+                "lt_grade":    p.get("lt_grade"),
             })
 
-        # ── Summary metrics ──────────────────────────────────────────────────
-        priced   = [r for r in rows if r["pnl"] is not None]
-        total_pnl = sum(r["pnl"] for r in priced)
+        # ── Global alerts (shown above all tabs) ─────────────────────────────
         stop_hits = [r for r in rows if "STOP HIT" in r["status"]]
         near_stps = [r for r in rows if "Near stop" in r["status"]]
-
-        # By-market cost breakdown
-        mkt_costs = {}
-        for r in rows:
-            mkt_costs[r["market"]] = mkt_costs.get(r["market"], 0) + r["cost"]
-        cost_str = "  |  ".join(
-            f"{m}: {_CURR_SYM.get(m,'$')}{v:,.0f}" for m, v in sorted(mkt_costs.items())
-        )
-
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Open Positions", len(positions))
-        m2.metric("Invested (by market)", cost_str if len(mkt_costs) == 1 else "↓ see below")
-        m3.metric("Unrealised P&L",
-                  f"{total_pnl:+,.0f}" if priced else "—",
-                  delta=f"{total_pnl/sum(r['cost'] for r in priced)*100:+.2f}%" if priced else None,
-                  delta_color="normal" if total_pnl >= 0 else "inverse")
-        m4.metric("Alerts",
-                  f"🔴 {len(stop_hits)} stop  🟡 {len(near_stps)} near",
-                  delta=None)
-
-        if len(mkt_costs) > 1:
-            st.caption("Invested: " + cost_str + "  *(mixed currencies — P&L totals are for reference only)*")
-
-        # Alert banners
         if stop_hits:
-            st.error("**Stop breached — review immediately:** "
+            st.error("🔴 **Stop breached — review immediately:** "
                      + ", ".join(r["ticker"] for r in stop_hits))
         if near_stps:
-            st.warning("**Within 5% of stop:** "
-                       + ", ".join(f"{r['ticker']} ({r['stop_dist']:.1f}%)" for r in near_stps))
+            st.warning("🟡 **Within 5% of stop:** "
+                       + ", ".join(f"{r['ticker']} ({r['stop_dist']:.1f}%)"
+                                   for r in near_stps))
 
-        st.markdown("---")
+        # ── Sub-tabs by region ────────────────────────────────────────────────
+        def _render_port_tab(tab_rows: list, market: str | None = None) -> None:
+            """Render summary + table + expanders for a given set of rows."""
+            if not tab_rows:
+                st.info(f"No open positions{f' in {market}' if market else ''}.")
+                return
 
-        # ── Main table ───────────────────────────────────────────────────────
-        def _fmt(val, fmt=".2f", fallback="—"):
-            return format(val, fmt) if val is not None else fallback
+            curr = _CURR_SYM.get(market, "$") if market else None
+            priced = [r for r in tab_rows if r["pnl"] is not None]
 
-        table_rows = []
-        for r in rows:
-            table_rows.append({
-                "Status":       r["status"],
-                "Ticker":       r["ticker"],
-                "Mkt":          r["market"],
-                "Sector":       r["sector"],
-                "Entry Date":   r["entry_date"],
-                "Days":         r["days_held"],
-                "Entry Px":     r["entry_px"],
-                "Live Px":      r["cur_px"],
-                "Stop":         r["stop"],
-                "Stop Dist %":  r["stop_dist"],
-                "Shares":       r["shares"],
-                "P&L":          r["pnl"],
-                "P&L %":        r["pnl_pct"],
-                "R-Mult":       r["r_mult"],
-            })
+            # Summary metrics
+            total_cost = sum(r["cost"] for r in tab_rows)
+            total_val  = sum(r["cur_val"] for r in priced) if priced else None
+            total_pnl  = sum(r["pnl"]  for r in priced)  if priced else None
+            pnl_pct_total = (total_pnl / total_cost * 100
+                             if total_pnl is not None and total_cost else None)
 
-        tbl_df = pd.DataFrame(table_rows)
+            if market:
+                # Single currency — show clean totals
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("Positions", len(tab_rows))
+                c2.metric(f"Invested ({curr})",
+                          f"{curr}{total_cost:,.0f}")
+                c3.metric(f"Unrealised P&L ({curr})",
+                          f"{curr}{total_pnl:+,.0f}" if total_pnl is not None else "—",
+                          delta=f"{pnl_pct_total:+.2f}%" if pnl_pct_total is not None else None,
+                          delta_color="normal" if (total_pnl or 0) >= 0 else "inverse")
+                c4.metric("Current Value",
+                          f"{curr}{total_val:,.0f}" if total_val is not None else "—")
+            else:
+                # Overview: break down by market
+                mkt_groups: dict = {}
+                for r in tab_rows:
+                    mkt_groups.setdefault(r["market"], []).append(r)
 
-        st.dataframe(
-            tbl_df,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Status":      st.column_config.TextColumn("Status", width="small"),
-                "Ticker":      st.column_config.TextColumn("Ticker", width="small"),
-                "Mkt":         st.column_config.TextColumn("Mkt",    width="small"),
-                "Days":        st.column_config.NumberColumn("Days",  format="%d"),
-                "Entry Px":    st.column_config.NumberColumn("Entry Px",   format="%.2f"),
-                "Live Px":     st.column_config.NumberColumn("Live Px",    format="%.2f"),
-                "Stop":        st.column_config.NumberColumn("Stop",       format="%.2f"),
-                "Stop Dist %": st.column_config.ProgressColumn(
-                                   "Stop Dist %", min_value=0, max_value=30, format="%.1f%%"),
-                "Shares":      st.column_config.NumberColumn("Shares",  format="%d"),
-                "P&L":         st.column_config.NumberColumn("P&L",     format="%+.0f"),
-                "P&L %":       st.column_config.NumberColumn("P&L %",   format="%+.2f%%"),
-                "R-Mult":      st.column_config.NumberColumn("R-Mult",  format="%+.2fR"),
-            },
-        )
-
-        # ── Per-position detail expanders ────────────────────────────────────
-        st.subheader("Position Detail")
-        for r in rows:
-            pnl_label = f"{r['pnl']:+,.0f}" if r["pnl"] is not None else "—"
-            r_label   = f"{r['r_mult']:+.2f}R" if r["r_mult"] is not None else "—"
-            with st.expander(
-                f"**{r['ticker']}** ({r['market']})  ·  {r['status']}  ·  "
-                f"P&L {pnl_label}  ·  {r_label}  ·  {r['days_held']}d held"
-            ):
                 c1, c2, c3 = st.columns(3)
-                with c1:
-                    st.metric("Entry Price",  f"{r['curr']}{r['entry_px']:,.2f}")
-                    st.metric("Live Price",   f"{r['curr']}{r['cur_px']:,.2f}"
-                                              if r["cur_px"] else "—")
-                    st.metric("Entry Date",   r["entry_date"])
-                with c2:
-                    st.metric("Stop Loss",    f"{r['curr']}{r['stop']:,.2f}")
-                    st.metric("Stop Cushion", f"{r['stop_dist']:.1f}%"
-                                              if r["stop_dist"] is not None else "—")
-                    st.metric("Peak Price",   f"{r['curr']}{r['peak_px']:,.2f}")
-                with c3:
-                    st.metric("ATR at Entry", f"{r['curr']}{r['atr']:.2f}")
-                    st.metric("Trail Stop",   f"{r['trail_mult']}× ATR")
-                    st.metric("Regime",       r["regime"])
+                c1.metric("Total Positions", len(tab_rows))
+                c2.metric("Markets", ", ".join(sorted(mkt_groups.keys())))
+                c3.metric("Alerts",
+                          f"🔴 {len(stop_hits)}  🟡 {len(near_stps)}"
+                          if (stop_hits or near_stps) else "✅ All safe")
 
-                st.caption(
-                    f"Shares: {r['shares']}  ·  Cost basis: {r['curr']}{r['cost']:,.0f}"
-                    + (f"  ·  Current value: {r['curr']}{r['cur_val']:,.0f}" if r["cur_val"] else "")
-                )
+                for mk, mk_rows in sorted(mkt_groups.items()):
+                    mk_curr  = _CURR_SYM.get(mk, "$")
+                    mk_cost  = sum(r["cost"] for r in mk_rows)
+                    mk_priced = [r for r in mk_rows if r["pnl"] is not None]
+                    mk_pnl   = sum(r["pnl"] for r in mk_priced) if mk_priced else None
+                    pnl_str  = f"{mk_curr}{mk_pnl:+,.0f}" if mk_pnl is not None else "—"
+                    st.caption(
+                        f"**{mk}** — Invested: {mk_curr}{mk_cost:,.0f}  ·  "
+                        f"P&L: {pnl_str}  ·  {len(mk_rows)} position(s)"
+                    )
+
+            st.markdown("---")
+
+            # Table
+            table_rows = []
+            for r in tab_rows:
+                table_rows.append({
+                    "Status":      r["status"],
+                    "Ticker":      r["ticker"] + (" 📈" if r["strategy"] == "longterm" else ""),
+                    "Sector":      r["sector"],
+                    "Days":        r["days_held"],
+                    "Entry Px":    r["entry_px"],
+                    "Live Px":     r["cur_px"],
+                    "Stop":        r["stop"],
+                    "Stop Dist %": r["stop_dist"],
+                    "Shares":      r["shares"],
+                    "P&L":         r["pnl"],
+                    "P&L %":       r["pnl_pct"],
+                    "R-Mult":      r["r_mult"],
+                })
+            tbl_df = pd.DataFrame(table_rows)
+            st.dataframe(
+                tbl_df, use_container_width=True, hide_index=True,
+                column_config={
+                    "Status":      st.column_config.TextColumn("Status",   width="small"),
+                    "Ticker":      st.column_config.TextColumn("Ticker",   width="small"),
+                    "Days":        st.column_config.NumberColumn("Days",   format="%d"),
+                    "Entry Px":    st.column_config.NumberColumn("Entry Px",  format="%.2f"),
+                    "Live Px":     st.column_config.NumberColumn("Live Px",   format="%.2f"),
+                    "Stop":        st.column_config.NumberColumn("Stop",      format="%.2f"),
+                    "Stop Dist %": st.column_config.ProgressColumn(
+                                       "Stop Dist %", min_value=0, max_value=30,
+                                       format="%.1f%%"),
+                    "Shares":      st.column_config.NumberColumn("Shares", format="%d"),
+                    "P&L":         st.column_config.NumberColumn("P&L",    format="%+.0f"),
+                    "P&L %":       st.column_config.NumberColumn("P&L %",  format="%+.2f%%"),
+                    "R-Mult":      st.column_config.NumberColumn("R-Mult", format="%+.2fR"),
+                },
+            )
+
+            # Per-position expanders
+            st.subheader("Position Detail")
+            for r in tab_rows:
+                pnl_label = f"{r['curr']}{r['pnl']:+,.0f}" if r["pnl"] is not None else "—"
+                r_label   = f"{r['r_mult']:+.2f}R" if r["r_mult"] is not None else "—"
+                lt_badge  = "  📈 LT" if r["strategy"] == "longterm" else ""
+                with st.expander(
+                    f"**{r['ticker']}**{lt_badge}  ·  {r['status']}  ·  "
+                    f"P&L {pnl_label}  ·  {r_label}  ·  {r['days_held']}d"
+                ):
+                    c1, c2, c3 = st.columns(3)
+                    with c1:
+                        st.metric("Entry Price", f"{r['curr']}{r['entry_px']:,.2f}")
+                        st.metric("Live Price",  f"{r['curr']}{r['cur_px']:,.2f}"
+                                                 if r["cur_px"] else "—")
+                        st.metric("Entry Date",  r["entry_date"])
+                    with c2:
+                        st.metric("Stop Loss",    f"{r['curr']}{r['stop']:,.2f}")
+                        st.metric("Stop Cushion", f"{r['stop_dist']:.1f}%"
+                                                  if r["stop_dist"] is not None else "—")
+                        st.metric("Peak Price",   f"{r['curr']}{r['peak_px']:,.2f}")
+                    with c3:
+                        st.metric("ATR at Entry", f"{r['curr']}{r['atr']:.2f}")
+                        st.metric("Trail Stop",   f"{r['trail_mult']}× ATR")
+                        st.metric("Regime",       r["regime"])
+
+                    st.caption(
+                        f"Shares: {r['shares']}  ·  Cost: {r['curr']}{r['cost']:,.0f}"
+                        + (f"  ·  Value: {r['curr']}{r['cur_val']:,.0f}" if r["cur_val"] else "")
+                    )
+                    if r["strategy"] == "longterm":
+                        st.caption(
+                            f"📈 Long-Term position  ·  "
+                            f"Combined score: {r['lt_combined']}  ·  Grade: {r['lt_grade']}  ·  "
+                            f"Exit trigger: SMA_200 cross"
+                        )
+
+        tab_ov, tab_us, tab_eu, tab_in = st.tabs(["🌍 Overview", "🇺🇸 US", "🇪🇺 EU", "🇮🇳 IN"])
+        with tab_ov:
+            _render_port_tab(rows, None)
+        with tab_us:
+            _render_port_tab([r for r in rows if r["market"] == "US"], "US")
+        with tab_eu:
+            _render_port_tab([r for r in rows if r["market"] == "EU"], "EU")
+        with tab_in:
+            _render_port_tab([r for r in rows if r["market"] == "IN"], "IN")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
