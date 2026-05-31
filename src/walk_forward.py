@@ -14,16 +14,20 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from config import GATE_DEFAULTS, TUNER_PARAMS
 from backtest import run_backtest, compute_metrics
 
 
+# Grid values are centred on the validated Run-17 IN config with ±1 step either side.
+# sma_dist_min: IN=0.005, US/EU=0.008  → test looser / current / tighter
+# volume_mult:  IN=0.55,  US/EU=0.65  → test looser / current / tighter
+# rsi_lo:       IN=42,    US/EU=47    → test slightly wider / each market default
+# rsi_hi:       IN=80,    US/EU=78    → test slightly tighter / each market default
 DEFAULT_GRID: Dict[str, List] = {
-    "sma_dist_min":  [0.01, 0.02, 0.03],
-    "volume_mult":   [0.85, 1.00, 1.10],
+    "sma_dist_min":  [0.003, 0.005, 0.010],
+    "volume_mult":   [0.45,  0.55,  0.70],
     "macd_hist_eps": [-0.001, 0.0],
-    "rsi_lo":        [50, 53],
-    "rsi_hi":        [65, 68],
+    "rsi_lo":        [40, 47],
+    "rsi_hi":        [78, 82],
 }
 
 
@@ -45,12 +49,22 @@ def evaluate_fold(
 ) -> Dict[str, Any]:
     import config
 
-    gd_backup = dict(config.GATE_DEFAULTS)
-    for k, v in params.items():
-        if k in config.GATE_DEFAULTS:
-            config.GATE_DEFAULTS[k] = v
+    # Gate evaluation reads from MARKET_PARAMS via get_gate_params() — patch that,
+    # not GATE_DEFAULTS, so the grid changes actually reach the backtest.
+    active_markets = list(watchlist.keys())
+    mp_backup: Dict = {}
+    for m in active_markets:
+        if m in config.MARKET_PARAMS:
+            mp_backup[m] = {k: config.MARKET_PARAMS[m][k]
+                            for k in params if k in config.MARKET_PARAMS[m]}
 
     try:
+        for m in active_markets:
+            if m in config.MARKET_PARAMS:
+                for k, v in params.items():
+                    if k in config.MARKET_PARAMS[m]:
+                        config.MARKET_PARAMS[m][k] = v
+
         is_res = run_backtest(
             market="ALL", start=train_start, end=train_end,
             initial_equity=initial_equity,
@@ -64,7 +78,9 @@ def evaluate_fold(
             data_map_override=data_map,
         )
     finally:
-        config.GATE_DEFAULTS.update(gd_backup)
+        for m, backup in mp_backup.items():
+            for k, v in backup.items():
+                config.MARKET_PARAMS[m][k] = v
 
     return {
         "params":  params,
