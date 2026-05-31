@@ -69,6 +69,108 @@ def _c(text: str, code: str) -> str:
     return f"\033[{code}m{text}\033[0m"
 
 
+# -- Post-screen helpers -------------------------------------------------------
+
+def _lt_update_journal(candidates: list[dict], markets_obj: dict) -> None:
+    """Write Tier-1 ENTER signals from the LT screener to the Excel journal."""
+    try:
+        from journal import update_journal
+        from config import WATCHLIST_FLAT
+
+        adapted = []
+        for s in candidates:
+            regime = {"label": "Normal", "can_trade": True}
+            adapted.append({
+                "ticker":        s["ticker"],
+                "decision":      "ENTER",
+                "reason":        (f"LT Screener — Tier 1  "
+                                  f"Combined={s['combined']:.1f}  "
+                                  f"Fund={s['fund_score']:.1f}  "
+                                  f"Grade={s['grade']}"),
+                "price":         s.get("price", 0),
+                "atr_pct":       s.get("atr_pct", 0),
+                "market":        s.get("market", "IN"),
+                "sector":        s["fund_data"].get("sector", "Unknown"),
+                "gates_passed":  s.get("gates", 5),
+                "quality_score": s.get("q_score"),
+                "gates": {
+                    "gate3_volatility": {
+                        "pass":    True,
+                        "regime":  regime,
+                        "details": {"atr_pct": s.get("atr_pct", 0),
+                                    "regime":  "Normal"},
+                    }
+                },
+                "sizing": {},
+            })
+
+        status = update_journal(adapted, WATCHLIST_FLAT, markets_obj)
+        print(f"  Journal  : {status}")
+    except Exception as exc:
+        print(f"  Journal  : \033[91mError — {exc}\033[0m")
+
+
+def _lt_update_portfolio(candidates: list[dict], today) -> None:
+    """Add Tier-1 ENTER signals to positions.json (strategy=longterm)."""
+    import json
+
+    port_path = ROOT / "portfolio" / "positions.json"
+
+    existing: list[dict] = []
+    if port_path.exists():
+        try:
+            existing = json.loads(port_path.read_text())
+        except Exception:
+            pass
+
+    existing_tickers = {p["ticker"] for p in existing}
+    today_str = today.strftime("%Y-%m-%d")
+    added: list[str] = []
+
+    for s in candidates:
+        ticker = s["ticker"]
+        if ticker in existing_tickers:
+            print(f"  Portfolio: {ticker} already tracked — skipped")
+            continue
+
+        price  = float(s.get("price") or 0)
+        sma200 = s.get("sma200") or price * 0.85
+        atr    = s.get("atr") or (price * (s.get("atr_pct") or 2) / 100)
+        stop   = round(max(float(sma200), price - 8 * atr), 2)
+
+        existing.append({
+            "ticker":            ticker,
+            "market":            s.get("market", "IN"),
+            "sector":            s["fund_data"].get("sector", "Unknown"),
+            "entry_price":       round(price, 2),
+            "entry_date":        today_str,
+            "shares":            0,
+            "stop_loss":         stop,
+            "stop_loss_initial": stop,
+            "trail_mult":        8.0,
+            "peak_price":        round(price, 2),
+            "atr_at_entry":      round(atr, 4),
+            "risk_pct":          0.0,
+            "regime":            "Normal",
+            "is_high_vol":       False,
+            "cost":              0.0,
+            "strategy":          "longterm",
+            "lt_combined":       round(s["combined"], 1),
+            "lt_fund_score":     round(s["fund_score"], 1),
+            "lt_grade":          s["grade"],
+        })
+        added.append(ticker)
+
+    if added:
+        port_path.parent.mkdir(exist_ok=True)
+        port_path.write_text(json.dumps(existing, indent=2))
+        print(f"  Portfolio: added {len(added)} LT position(s): {', '.join(added)}")
+        print(f"  \033[90m  -> Fill 'shares' and 'cost' in portfolio/positions.json "
+              f"after you execute the order\033[0m")
+    else:
+        print(f"  Portfolio: no new positions to add\n")
+
+
 # -- Main pipeline -------------------------------------------------------------
 
 def run_longterm_screen(
@@ -178,6 +280,13 @@ def run_longterm_screen(
         return
 
     # -- 3. Fundamental analysis -----------------------------------------------
+    # Also capture raw ATR for portfolio sizing
+    for s in shortlist:
+        df  = data_map.get(s["ticker"])
+        atr = (float(df["ATR"].iloc[-1])
+               if df is not None and "ATR" in df.columns else None)
+        s["atr"] = atr
+
     tickers = [s["ticker"] for s in shortlist]
     cache_note = "  (refreshing cache)" if refresh_cache else "  (using 7-day cache)"
     print(f"\n[3/4] Fundamental analysis for {len(tickers)} stocks...{cache_note}")
@@ -381,6 +490,15 @@ def run_longterm_screen(
     print(f"  Weights: ROE 20%  RevGrowth 15%  D/E 15%  EPS 12%  "
           f"OpMargin 10%  PEG 10%  FCF 8%  P/B 5%  NM 5%")
     print(f"{_hdr}{'='*72}{_rst}\n")
+
+    # -- 5. Journal + Portfolio for Tier 1 ENTER signals ----------------------
+    lt_enters = [s for s in tier1 if s["decision"] == "ENTER"]
+    if lt_enters:
+        print(f"\033[1m\033[94m  Post-screen actions ({len(lt_enters)} Tier-1 ENTER signal(s))...\033[0m")
+        _lt_update_journal(lt_enters, MARKETS)
+        _lt_update_portfolio(lt_enters, today)
+    else:
+        print(f"\033[90m  No Tier-1 ENTER signals — journal and portfolio not updated.\033[0m\n")
 
 
 # -- CLI -----------------------------------------------------------------------

@@ -673,13 +673,22 @@ class App(tk.Tk):
                 pct_str  = f"{pnl_pct:+.1f}%"
                 dist_str = f"{stop_dist:.1f}%"
 
+                strategy   = pos.get("strategy", "")
+                lt_line    = ""
+                if strategy == "longterm":
+                    lt_line = (f"  LT Score: {pos.get('lt_combined','?')}  "
+                               f"Fund: {pos.get('lt_fund_score','?')}  "
+                               f"Grade: {pos.get('lt_grade','?')}  "
+                               f"[Exit: SMA_200 cross]\n")
                 detail_parts.append(
                     f"\n{'─'*58}\n"
-                    f"  {ticker} ({market})  |  {days} days held  |  {status}\n"
+                    f"  {ticker} ({market})  |  {days} days held  |  {status}"
+                    f"{'  [LT]' if strategy == 'longterm' else ''}\n"
                     f"  Entry: {sym}{entry_px:.2f}   Live: {sym}{cur_px:.2f}   Stop: {sym}{stop:.2f}\n"
                     f"  P&L: {sym}{pnl:+.0f} ({pnl_pct:+.1f}%)   R: {r_str}   Cushion: {stop_dist:.1f}%\n"
                     f"  Shares: {shares:.0f}   Cost: {sym}{cost:,.0f}   "
                     f"ATR@entry: {sym}{atr:.2f}   Trail: {trail_m}×   Regime: {regime}\n"
+                    + lt_line
                 )
             else:
                 live_str = pnl_str = pct_str = r_str = dist_str = "—"
