@@ -42,3 +42,11 @@ desktop.ini
 .idea/
 *.swp
 *.swo
+
+# Claude Code session data
+.claude/
+
+# Temporary diagnostic / one-off scripts
+src/_bt_time.py
+src/_fetch_test.py
+src/_wfo_quick.py
