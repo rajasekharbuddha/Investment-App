@@ -365,7 +365,7 @@ with T_BT:
                     ec_df = pd.DataFrame(ec).set_index("date")
                     ec_df.index = pd.to_datetime(ec_df.index)
                     st.subheader("Equity Curve")
-                    st.area_chart(ec_df["equity"], use_container_width=True)
+                    st.area_chart(ec_df["equity"], width="stretch")
 
                 st.code(_strip(report_text), language=None)
 
@@ -489,7 +489,7 @@ with T_LTB:
                     else:
                         chart_data = pd.Series(ec)
                     st.subheader("Equity Curve")
-                    st.area_chart(chart_data, use_container_width=True)
+                    st.area_chart(chart_data, width="stretch")
                 except Exception:
                     pass
 
@@ -772,7 +772,7 @@ with T_MC:
                         "p95":    np.percentile(arr, 95, axis=0),
                     })
                     st.subheader("Percentile Equity Paths")
-                    st.line_chart(chart_df, use_container_width=True)
+                    st.line_chart(chart_df, width="stretch")
                 except Exception:
                     pass
 
@@ -1013,7 +1013,7 @@ with T_PORT:
                 })
             tbl_df = pd.DataFrame(table_rows)
             st.dataframe(
-                tbl_df, use_container_width=True, hide_index=True,
+                tbl_df, width="stretch", hide_index=True,
                 column_config={
                     "Status":      st.column_config.TextColumn("Status",   width="small"),
                     "Ticker":      st.column_config.TextColumn("Ticker",   width="small"),

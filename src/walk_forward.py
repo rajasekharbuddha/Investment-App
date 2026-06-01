@@ -216,7 +216,7 @@ def walk_forward(
 def format_wfo_summary(result: Dict) -> str:
     lines = ["\n=== WALK-FORWARD OPTIMISATION SUMMARY ==="]
     lines.append(f"Folds: {len(result['folds'])}  Grid combos: {result['n_combos']}")
-    lines.append(f"Avg IS→OOS degradation: {result['avg_degradation']:.1%}")
+    lines.append(f"Avg IS->OOS degradation: {result['avg_degradation']:.1%}")
     oos = result.get("oos_metrics_overall", {})
     if oos:
         lines.append(f"\nConcatenated OOS: CAGR={oos.get('cagr_pct',0):.2f}%  "
