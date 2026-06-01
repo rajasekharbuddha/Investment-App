@@ -14,7 +14,7 @@ from pathlib import Path
 from datetime import datetime
 
 # Cross-platform monospace font: Menlo on macOS, Consolas on Windows/Linux
-_MONO = "Menlo" if platform.system() == "Darwin" else _MONO
+_MONO = "Menlo" if platform.system() == "Darwin" else "Consolas"
 
 import pandas as pd
 
