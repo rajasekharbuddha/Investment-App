@@ -437,7 +437,7 @@ class App(tk.Tk):
         self._lt_out = self._terminal(parent)
 
     def _tab_portfolio(self, parent):
-        _PORT_FILE = ROOT / "portfolio" / "positions.json"
+        _PORT_ROOT = ROOT / "portfolio"
 
         bar = tk.Frame(parent, bg=self.BG, padx=14, pady=12)
         bar.pack(fill="x")
@@ -552,20 +552,29 @@ class App(tk.Tk):
                 "out":      out,
             }
 
-        self._port_file = _PORT_FILE
+        self._port_root = _PORT_ROOT
         self._port_curr = _CURR
         self._port_load_static()
 
+    def _load_all_st_positions(self) -> list:
+        positions = []
+        for mkt in ("US", "EU", "IN"):
+            f = self._port_root / f"st_{mkt}.json"
+            if f.exists():
+                try:
+                    rows = json.loads(f.read_text())
+                    for r in rows:
+                        r.setdefault("market", mkt)
+                    positions.extend(rows)
+                except Exception:
+                    pass
+        return positions
+
     def _port_load_static(self):
-        if not self._port_file.exists():
+        positions = self._load_all_st_positions()
+        if not positions:
             for tab in self._port_tabs.values():
-                tab["n_lbl"].configure(text="Positions: 0  (no positions.json found)")
-            return
-        try:
-            positions = json.loads(self._port_file.read_text())
-        except Exception as e:
-            for tab in self._port_tabs.values():
-                tab["n_lbl"].configure(text=f"Error loading positions: {e}")
+                tab["n_lbl"].configure(text="Positions: 0  (no portfolio files found)")
             return
 
         for tab in self._port_tabs.values():
@@ -617,19 +626,11 @@ class App(tk.Tk):
         threading.Thread(target=self._worker_portfolio, daemon=True).start()
 
     def _worker_portfolio(self):
-        if not self._port_file.exists():
+        positions = self._load_all_st_positions()
+        if not positions:
             self.after(0, lambda: self._port_btn.configure(
                 state="normal", text="↻  Refresh Prices"))
-            self.after(0, lambda: self._status.set("No positions.json found."))
-            return
-
-        try:
-            positions = json.loads(self._port_file.read_text())
-        except Exception as e:
-            err = str(e)
-            self.after(0, lambda: messagebox.showerror("Error", f"Failed to load positions: {err}"))
-            self.after(0, lambda: self._port_btn.configure(
-                state="normal", text="↻  Refresh Prices"))
+            self.after(0, lambda: self._status.set("No portfolio files found."))
             return
 
         import yfinance as yf
@@ -1096,10 +1097,10 @@ class App(tk.Tk):
             today = (asof_dt if asof_dt is not None
                      else pd.Timestamp.today().normalize())
 
-            acct       = self._settings["account_size"]
+            PER_REGION_EQUITY = 100_000
             root       = Path(__file__).parent
             tuner_path = root / "tuner_state.json"
-            port_path  = root / "portfolio" / "positions.json"
+            port_root  = root / "portfolio"
 
             active_markets = [m.strip().upper() for m in markets.split(",")]
 
@@ -1158,67 +1159,96 @@ class App(tk.Tk):
                     if quality_filtered:
                         w.write(f"  [quality] {len(quality_filtered)} Drag stocks filtered out\n")
 
-                w.write("\n[3/5] Running DecisionEngine.run_day()...\n")
-                portfolio = []
-                if port_path.exists():
-                    try:
-                        portfolio = json.loads(port_path.read_text())
-                    except Exception:
-                        pass
+                w.write("\n[3/5] Running DecisionEngine.run_day() — per market (100k each)...\n")
+                tuner = AdaptiveTuner.load(str(tuner_path))
+                all_candidates: dict = {}
+                all_sizing:     dict = {}
+                total_held = total_new = total_repl = 0
+                result = None
 
-                tuner  = AdaptiveTuner.load(str(tuner_path))
-                engine = DecisionEngine(tuner=tuner)
+                port_root.mkdir(exist_ok=True)
 
-                result = engine.run_day(
-                    today=today,
-                    data_map=data_map,
-                    portfolio=portfolio,
-                    equity=acct,
-                    context="live",
-                    watchlist=active_wl,
-                    quality_scores=quality_scores if use_qf else None,
-                )
+                def _load_mkt_port(mkt):
+                    f = port_root / f"st_{mkt}.json"
+                    if f.exists():
+                        try:
+                            return json.loads(f.read_text())
+                        except Exception:
+                            pass
+                    return []
 
-                # Save updated portfolio (held positions + new entries)
-                new_portfolio = list(result["held"])
-                for entry_info in result["new_entries"] + result["replacement_queue"]:
-                    ticker = entry_info["ticker"]
-                    close  = (float(data_map[ticker].iloc[-1]["Close"])
-                              if ticker in data_map else entry_info.get("price", 0))
-                    if entry_info.get("shares", 0) > 0:
-                        regime = entry_info.get("regime", {})
-                        new_portfolio.append({
-                            "ticker":            ticker,
-                            "market":            entry_info.get("market", "US"),
-                            "sector":            entry_info.get("sector", "Unknown"),
-                            "entry_price":       close,
-                            "entry_date":        today.strftime("%Y-%m-%d"),
-                            "shares":            entry_info.get("shares", 0),
-                            "stop_loss":         entry_info.get("stop_price", close * 0.95),
-                            "stop_loss_initial": entry_info.get("stop_price", close * 0.95),
-                            "trail_mult":        entry_info.get("trail_mult", 5.0),
-                            "peak_price":        close,
-                            "atr_at_entry":      entry_info.get("atr", 0),
-                            "risk_pct":          (regime.get("risk_pct", 0.05)
-                                                  if isinstance(regime, dict) else 0.05),
-                            "regime":            (regime.get("label", "Normal")
-                                                  if isinstance(regime, dict) else "Normal"),
-                            "is_high_vol":       entry_info.get("is_high_vol", False),
-                            "cost":              entry_info.get("cost", 0),
-                        })
-                port_path.parent.mkdir(exist_ok=True)
-                port_path.write_text(json.dumps(new_portfolio, indent=2))
-                n_held = len(result["held"])
-                n_new  = len(result["new_entries"])
-                n_repl = len(result["replacement_queue"])
-                w.write(f"  Portfolio saved: {n_held} held"
-                        f"{f', +{n_new} new' if n_new else ''}"
-                        f"{f', +{n_repl} queued' if n_repl else ''}\n")
+                def _save_mkt_port(mkt, positions):
+                    (port_root / f"st_{mkt}.json").write_text(
+                        json.dumps(positions, indent=2))
+
+                def _build_new_port(held, new_entries, repl_queue):
+                    new_port = list(held)
+                    for entry_info in new_entries + repl_queue:
+                        ticker = entry_info["ticker"]
+                        close  = (float(data_map[ticker].iloc[-1]["Close"])
+                                  if ticker in data_map else entry_info.get("price", 0))
+                        if entry_info.get("shares", 0) > 0:
+                            regime = entry_info.get("regime", {})
+                            new_port.append({
+                                "ticker":            ticker,
+                                "market":            entry_info.get("market", "US"),
+                                "sector":            entry_info.get("sector", "Unknown"),
+                                "entry_price":       close,
+                                "entry_date":        today.strftime("%Y-%m-%d"),
+                                "shares":            entry_info.get("shares", 0),
+                                "stop_loss":         entry_info.get("stop_price", close * 0.95),
+                                "stop_loss_initial": entry_info.get("stop_price", close * 0.95),
+                                "trail_mult":        entry_info.get("trail_mult", 5.0),
+                                "peak_price":        close,
+                                "atr_at_entry":      entry_info.get("atr", 0),
+                                "risk_pct":          (regime.get("risk_pct", 0.05)
+                                                      if isinstance(regime, dict) else 0.05),
+                                "regime":            (regime.get("label", "Normal")
+                                                      if isinstance(regime, dict) else "Normal"),
+                                "is_high_vol":       entry_info.get("is_high_vol", False),
+                                "cost":              entry_info.get("cost", 0),
+                            })
+                    return new_port
+
+                for market in active_markets:
+                    mkt_port = _load_mkt_port(market)
+                    mkt_wl   = {market: active_wl.get(market, [])}
+                    engine   = DecisionEngine(tuner=tuner)
+                    engine.peak_equity = PER_REGION_EQUITY
+
+                    mkt_result = engine.run_day(
+                        today=today,
+                        data_map=data_map,
+                        portfolio=mkt_port,
+                        equity=PER_REGION_EQUITY,
+                        context="live",
+                        watchlist=mkt_wl,
+                        quality_scores=quality_scores if use_qf else None,
+                    )
+
+                    new_port = _build_new_port(
+                        mkt_result["held"],
+                        mkt_result["new_entries"],
+                        mkt_result["replacement_queue"],
+                    )
+                    _save_mkt_port(market, new_port)
+
+                    n_h = len(mkt_result["held"])
+                    n_n = len(mkt_result["new_entries"])
+                    n_r = len(mkt_result["replacement_queue"])
+                    w.write(f"  [{market}] Portfolio saved: {n_h} held"
+                            f"{f', +{n_n} new' if n_n else ''}"
+                            f"{f', +{n_r} queued' if n_r else ''}\n")
+
+                    total_held += n_h; total_new += n_n; total_repl += n_r
+                    all_candidates.update(mkt_result["candidates"])
+                    all_sizing.update(mkt_result["sizing"])
+                    result = mkt_result
 
                 w.write("\n[4/5] Generating report...\n")
-                candidates = list(result["candidates"].values())
+                candidates = list(all_candidates.values())
                 for c in candidates:
-                    sz = result["sizing"].get(c["ticker"])
+                    sz = all_sizing.get(c["ticker"])
                     if sz:
                         c["sizing"] = sz
 
@@ -1228,7 +1258,7 @@ class App(tk.Tk):
                     w.write(f"  [tuner] Mode shifted: {loaded_mode} → {next_mode} (next scan)\n")
                 daily_report(
                     decisions=candidates,
-                    account_eur=acct,
+                    account_eur=PER_REGION_EQUITY,
                     watchlist=active_wl,
                     markets=MARKETS,
                     tuner_mode=loaded_mode,
@@ -1236,13 +1266,16 @@ class App(tk.Tk):
                     quality_filtered=result.get("quality_filtered", quality_filtered),
                     quality_scores=result.get("quality_scores", quality_scores),
                 )
-                portfolio_review_report(result, acct)
+                portfolio_review_report(result, PER_REGION_EQUITY)
 
                 w.write("\n[5/5] Updating journal...\n")
                 status = update_journal(candidates, WATCHLIST_FLAT, MARKETS)
                 w.write(status + "\n")
 
                 tuner.save(str(tuner_path))
+                w.write(f"\n  Total across all markets: {total_held} held"
+                        f"{f', +{total_new} new' if total_new else ''}"
+                        f"{f', +{total_repl} queued' if total_repl else ''}\n")
 
         except Exception as exc:
             import traceback

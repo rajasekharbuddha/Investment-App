@@ -124,9 +124,54 @@ with T_SCAN:
             from decision_engine import DecisionEngine
             from report import daily_report
 
-            PORTFOLIO_FILE = ROOT / "portfolio" / "positions.json"
-            TUNER_FILE     = ROOT / "tuner_state.json"
-            STATE_FILE     = ROOT / "state" / "last_decisions.json"
+            # Per-region portfolio files (st = short-term, lt = long-term)
+            def _port_file(strategy: str, market: str):
+                return ROOT / "portfolio" / f"{strategy}_{market}.json"
+
+            def _load_port(strategy: str, market: str) -> list:
+                f = _port_file(strategy, market)
+                if not f.exists():
+                    return []
+                try:
+                    return json.loads(f.read_text(encoding="utf-8"))
+                except Exception:
+                    return []
+
+            def _save_port(strategy: str, market: str, positions: list) -> None:
+                f = _port_file(strategy, market)
+                f.parent.mkdir(exist_ok=True)
+                f.write_text(json.dumps(positions, indent=2))
+
+            def _build_new_port(held, new_entries, replacement_queue, data_map, today_ts):
+                new_port = list(held)
+                for entry_info in new_entries + replacement_queue:
+                    ticker = entry_info["ticker"]
+                    close  = (float(data_map[ticker].iloc[-1]["Close"])
+                              if ticker in data_map else entry_info.get("price", 0))
+                    if entry_info.get("shares", 0) > 0:
+                        regime = entry_info.get("regime", {})
+                        new_port.append({
+                            "ticker":            ticker,
+                            "market":            entry_info.get("market", "US"),
+                            "sector":            entry_info.get("sector", "Unknown"),
+                            "entry_price":       close,
+                            "entry_date":        today_ts.strftime("%Y-%m-%d"),
+                            "shares":            entry_info.get("shares", 0),
+                            "stop_loss":         entry_info.get("stop_price", close * 0.95),
+                            "stop_loss_initial": entry_info.get("stop_price", close * 0.95),
+                            "trail_mult":        entry_info.get("trail_mult", 5.0),
+                            "peak_price":        close,
+                            "atr_at_entry":      entry_info.get("atr", 0),
+                            "risk_pct":          (regime.get("risk_pct", 0.05) if isinstance(regime, dict) else 0.05),
+                            "regime":            (regime.get("label", "Normal") if isinstance(regime, dict) else "Normal"),
+                            "is_high_vol":       entry_info.get("is_high_vol", False),
+                            "cost":              entry_info.get("cost", 0),
+                        })
+                return new_port
+
+            TUNER_FILE  = ROOT / "tuner_state.json"
+            STATE_FILE  = ROOT / "state" / "last_decisions.json"
+            PER_REGION_EQUITY = 100_000   # fixed 100k per region
 
             with st.status("Running daily scan…", expanded=True) as status:
 
@@ -152,7 +197,6 @@ with T_SCAN:
                 st.write(f"⚙ Calculating indicators for {len(raw_data)} tickers…")
                 with contextlib.redirect_stdout(buf):
                     data_map_full = {t: calculate_all(df) for t, df in raw_data.items()}
-                    # Slice to as-of date — matches desktop app behaviour, prevents lookahead
                     data_map = {
                         t: df[df.index <= today_ts]
                         for t, df in data_map_full.items()
@@ -164,7 +208,6 @@ with T_SCAN:
                         active_wl = _dyn_wl(data_map, DYNAMIC_UNIVERSE["SCORE_TOP_N"],
                                              watchlist=active_wl)
 
-                # Quality scoring
                 quality_scores, quality_filtered = {}, []
                 if quality_filter_s:
                     st.write("🔎 Quality scoring universe…")
@@ -176,85 +219,71 @@ with T_SCAN:
                             all_tickers, quality_scores,
                             min_score=QUALITY_FILTER.get("MIN_SCORE", 35))
 
-                st.write("🤖 Running DecisionEngine…")
+                st.write("🤖 Running DecisionEngine — per-region 100k…")
                 with contextlib.redirect_stdout(buf):
-                    portfolio_data = []
-                    if PORTFOLIO_FILE.exists():
-                        try:
-                            portfolio_data = json.loads(PORTFOLIO_FILE.read_text())
-                        except Exception:
-                            pass
-
-                    # Wire sidebar momentum-exit toggle into config before engine runs
                     import config as _cfg
                     _cfg.MOMENTUM_EXIT["ENABLED"] = momentum_exit_s
 
-                    tuner  = AdaptiveTuner.load(str(TUNER_FILE))
-                    engine = DecisionEngine(tuner=tuner)
+                    tuner = AdaptiveTuner.load(str(TUNER_FILE))
 
-                    result = engine.run_day(
-                        today=today_ts,
-                        data_map=data_map,
-                        portfolio=portfolio_data,
-                        equity=equity_s,
-                        context="live",
-                        watchlist=active_wl,
-                        quality_scores=quality_scores if quality_filter_s else None,
-                    )
+                    # ── Per-region independent scan (100k equity each) ──────────
+                    all_candidates, all_sizing = {}, {}
+                    total_held = total_new = total_repl = 0
+                    last_result = None
 
-                # Save updated portfolio (held positions + new entries)
-                new_portfolio = list(result["held"])
-                for entry_info in result["new_entries"] + result["replacement_queue"]:
-                    ticker = entry_info["ticker"]
-                    close  = (float(data_map[ticker].iloc[-1]["Close"])
-                              if ticker in data_map else entry_info.get("price", 0))
-                    if entry_info.get("shares", 0) > 0:
-                        regime = entry_info.get("regime", {})
-                        new_portfolio.append({
-                            "ticker":            ticker,
-                            "market":            entry_info.get("market", "US"),
-                            "sector":            entry_info.get("sector", "Unknown"),
-                            "entry_price":       close,
-                            "entry_date":        today_ts.strftime("%Y-%m-%d"),
-                            "shares":            entry_info.get("shares", 0),
-                            "stop_loss":         entry_info.get("stop_price", close * 0.95),
-                            "stop_loss_initial": entry_info.get("stop_price", close * 0.95),
-                            "trail_mult":        entry_info.get("trail_mult", 5.0),
-                            "peak_price":        close,
-                            "atr_at_entry":      entry_info.get("atr", 0),
-                            "risk_pct":          (regime.get("risk_pct", 0.05)
-                                                  if isinstance(regime, dict) else 0.05),
-                            "regime":            (regime.get("label", "Normal")
-                                                  if isinstance(regime, dict) else "Normal"),
-                            "is_high_vol":       entry_info.get("is_high_vol", False),
-                            "cost":              entry_info.get("cost", 0),
-                        })
-                PORTFOLIO_FILE.parent.mkdir(exist_ok=True)
-                PORTFOLIO_FILE.write_text(json.dumps(new_portfolio, indent=2))
-                _n_held = len(result["held"])
-                _n_new  = len(result["new_entries"])
-                _n_repl = len(result["replacement_queue"])
-                _port_msg = f"Portfolio saved: {_n_held} held"
-                if _n_new:  _port_msg += f", +{_n_new} new"
-                if _n_repl: _port_msg += f", +{_n_repl} queued"
-                st.write(f"💾 {_port_msg}")
+                    for market in scan_markets:
+                        mkt_port = _load_port("st", market)
+                        mkt_wl   = {market: active_wl.get(market, [])}
+
+                        engine = DecisionEngine(tuner=tuner)
+                        engine.peak_equity = PER_REGION_EQUITY
+
+                        mkt_result = engine.run_day(
+                            today=today_ts,
+                            data_map=data_map,
+                            portfolio=mkt_port,
+                            equity=PER_REGION_EQUITY,
+                            context="live",
+                            watchlist=mkt_wl,
+                            quality_scores=quality_scores if quality_filter_s else None,
+                        )
+
+                        new_port = _build_new_port(
+                            mkt_result["held"],
+                            mkt_result["new_entries"],
+                            mkt_result["replacement_queue"],
+                            data_map, today_ts,
+                        )
+                        _save_port("st", market, new_port)
+
+                        total_held += len(mkt_result["held"])
+                        total_new  += len(mkt_result["new_entries"])
+                        total_repl += len(mkt_result["replacement_queue"])
+                        all_candidates.update(mkt_result["candidates"])
+                        all_sizing.update(mkt_result["sizing"])
+                        last_result = mkt_result
+
+                _port_msg = f"Portfolios saved: {total_held} held"
+                if total_new:  _port_msg += f", +{total_new} new entries"
+                if total_repl: _port_msg += f", +{total_repl} queued"
+                st.write(f"💾 {_port_msg}  (100k per region)")
 
                 st.write("📝 Generating report…")
                 with contextlib.redirect_stdout(buf):
-                    candidates = list(result["candidates"].values())
+                    candidates = list(all_candidates.values())
                     for c in candidates:
-                        sz = result["sizing"].get(c["ticker"])
+                        sz = all_sizing.get(c["ticker"])
                         if sz:
                             c["sizing"] = sz
 
-                    loaded_mode = result.get("loaded_tuner_mode", result["tuner_mode"])
+                    loaded_mode = last_result.get("loaded_tuner_mode", last_result["tuner_mode"])
                     report_text = daily_report(
                         decisions=candidates,
-                        account_eur=equity_s,
+                        account_eur=PER_REGION_EQUITY,
                         watchlist=active_wl,
                         markets=MARKETS,
                         tuner_mode=loaded_mode,
-                        risk_scale=result["risk_scale"],
+                        risk_scale=last_result["risk_scale"],
                         quality_filtered=quality_filtered,
                         quality_scores=quality_scores,
                     )
@@ -272,8 +301,8 @@ with T_SCAN:
             # Metric bar
             enters = [c for c in candidates if c.get("decision") == "ENTER"]
             nears  = [c for c in candidates if c.get("decision") == "NEAR"]
-            loaded_mode = result.get("loaded_tuner_mode", result["tuner_mode"])
-            next_mode   = result["tuner_mode"]
+            loaded_mode = last_result.get("loaded_tuner_mode", last_result["tuner_mode"])
+            next_mode   = last_result["tuner_mode"]
             mode_label  = loaded_mode if loaded_mode == next_mode else f"{loaded_mode}→{next_mode}"
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("ENTER signals",   len(enters))
@@ -802,17 +831,26 @@ with T_MC:
 # TAB 8 — Portfolio
 # ══════════════════════════════════════════════════════════════════════════════
 
-_CURR_SYM = {"IN": "Rs ", "US": "$", "EU": "€"}
-_PORT_FILE = ROOT / "portfolio" / "positions.json"
+_CURR_SYM   = {"IN": "Rs ", "US": "$", "EU": "€"}
+_PORT_ROOT  = ROOT / "portfolio"
+_STRATEGIES = {"st": "Short-Term Momentum", "lt": "Long-Term"}
+_MARKETS    = ["US", "EU", "IN"]
 
 
-def _load_positions() -> list:
-    if not _PORT_FILE.exists():
-        return []
-    try:
-        return json.loads(_PORT_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        return []
+def _load_strategy_positions(strategy: str) -> list:
+    """Load all positions for a given strategy across all regions."""
+    positions = []
+    for mkt in _MARKETS:
+        f = _PORT_ROOT / f"{strategy}_{mkt}.json"
+        if f.exists():
+            try:
+                rows = json.loads(f.read_text(encoding="utf-8"))
+                for r in rows:
+                    r.setdefault("market", mkt)
+                positions.extend(rows)
+            except Exception:
+                pass
+    return positions
 
 
 def _fetch_live_prices(tickers: list) -> dict:
@@ -846,170 +884,135 @@ def _fetch_live_prices(tickers: list) -> dict:
 
 with T_PORT:
     st.header("Portfolio — Open Positions")
-    st.caption("Live P&L, stop levels, and days held. Prices fetched from Yahoo Finance.")
+    st.caption("Two independent strategies × three regions. Each region runs on a 100,000 equity base.")
 
-    positions = _load_positions()
+    strategy_tab_st, strategy_tab_lt = st.tabs(
+        ["📊 Short-Term Momentum", "🏦 Long-Term"]
+    )
 
-    if not positions:
-        st.info("No open positions found in portfolio/positions.json. "
-                "Run a Daily Scan to populate the portfolio.")
-    else:
-        # ── Refresh controls ─────────────────────────────────────────────────
-        btn_col, ts_col = st.columns([1, 4])
-        with btn_col:
-            do_refresh = st.button("🔄 Refresh Prices", type="primary", key="port_refresh")
-        with ts_col:
-            if "port_fetched_at" in st.session_state:
-                st.caption(f"Last fetched: {st.session_state['port_fetched_at']}")
+    for _strat_key, _strat_tab in [("st", strategy_tab_st), ("lt", strategy_tab_lt)]:
+      with _strat_tab:
+        positions = _load_strategy_positions(_strat_key)
+        _strat_label = _STRATEGIES[_strat_key]
 
-        tickers = [p["ticker"] for p in positions]
+        if not positions:
+            st.info(
+                f"No open positions in {_strat_label} portfolios.  "
+                + ("Run a Daily Scan to populate." if _strat_key == "st"
+                   else "Add positions via the Long-Term Screener tab.")
+            )
+        else:
+            # ── Price refresh controls ────────────────────────────────────────
+            _refresh_key  = f"port_refresh_{_strat_key}"
+            _prices_key   = f"port_prices_{_strat_key}"
+            _fetched_key  = f"port_fetched_at_{_strat_key}"
 
-        if do_refresh or "port_prices" not in st.session_state:
-            with st.spinner(f"Fetching live prices for {len(tickers)} tickers…"):
-                st.session_state["port_prices"]     = _fetch_live_prices(tickers)
-                st.session_state["port_fetched_at"] = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M")
+            btn_col, ts_col = st.columns([1, 4])
+            with btn_col:
+                do_refresh = st.button("🔄 Refresh Prices", type="primary", key=_refresh_key)
+            with ts_col:
+                if _fetched_key in st.session_state:
+                    st.caption(f"Last fetched: {st.session_state[_fetched_key]}")
 
-        price_map: dict = st.session_state.get("port_prices", {})
+            tickers = [p["ticker"] for p in positions]
+            if do_refresh or _prices_key not in st.session_state:
+                with st.spinner(f"Fetching live prices for {len(tickers)} tickers…"):
+                    st.session_state[_prices_key]  = _fetch_live_prices(tickers)
+                    st.session_state[_fetched_key] = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M")
 
-        # ── Build rows ───────────────────────────────────────────────────────
-        today = pd.Timestamp.today().normalize()
-        rows  = []
-        for p in positions:
-            ticker     = p["ticker"]
-            market     = p.get("market", "US")
-            curr       = _CURR_SYM.get(market, "$")
-            entry_px   = float(p.get("entry_price", 0))
-            entry_date = pd.Timestamp(p.get("entry_date", "2000-01-01"))
-            shares     = int(p.get("shares", 0))
-            stop       = float(p.get("stop_loss", 0))
-            stop_init  = float(p.get("stop_loss_initial", stop))
-            cost       = float(p.get("cost", entry_px * shares))
-            peak_px    = float(p.get("peak_price", entry_px))
-            atr        = float(p.get("atr_at_entry", 0))
-            trail_mult = float(p.get("trail_mult", 5.0))
-            regime     = p.get("regime", "Normal")
-            strategy   = p.get("strategy", "")
-            days_held  = max((today - entry_date).days, 0)
+            price_map: dict = st.session_state.get(_prices_key, {})
 
-            cur_px = price_map.get(ticker)
+            # ── Build rows ───────────────────────────────────────────────────
+            today_p = pd.Timestamp.today().normalize()
+            rows    = []
+            for p in positions:
+                ticker     = p["ticker"]
+                market     = p.get("market", "US")
+                curr       = _CURR_SYM.get(market, "$")
+                entry_px   = float(p.get("entry_price", 0))
+                entry_date = pd.Timestamp(p.get("entry_date", "2000-01-01"))
+                shares     = int(p.get("shares", 0))
+                stop       = float(p.get("stop_loss", 0))
+                stop_init  = float(p.get("stop_loss_initial", stop))
+                cost       = float(p.get("cost", entry_px * shares))
+                peak_px    = float(p.get("peak_price", entry_px))
+                atr        = float(p.get("atr_at_entry", 0))
+                trail_mult = float(p.get("trail_mult", 5.0))
+                regime     = p.get("regime", "Normal")
+                days_held  = max((today_p - entry_date).days, 0)
+                cur_px     = price_map.get(ticker)
 
-            if cur_px is not None:
-                cur_val   = shares * cur_px
-                pnl       = cur_val - cost
-                pnl_pct   = (cur_px - entry_px) / entry_px * 100 if entry_px else 0.0
-                init_risk = entry_px - stop_init
-                r_mult    = (cur_px - entry_px) / init_risk if init_risk > 0 else 0.0
-                stop_dist = (cur_px - stop) / cur_px * 100 if cur_px else 0.0
-
-                if cur_px <= stop:
-                    status = "🔴 STOP HIT"
-                elif stop_dist < 5.0:
-                    status = "🟡 Near stop"
+                if cur_px is not None:
+                    cur_val   = shares * cur_px
+                    pnl       = cur_val - cost
+                    pnl_pct   = (cur_px - entry_px) / entry_px * 100 if entry_px else 0.0
+                    init_risk = entry_px - stop_init
+                    r_mult    = (cur_px - entry_px) / init_risk if init_risk > 0 else 0.0
+                    stop_dist = (cur_px - stop) / cur_px * 100 if cur_px else 0.0
+                    if cur_px <= stop:
+                        pstatus = "🔴 STOP HIT"
+                    elif stop_dist < 5.0:
+                        pstatus = "🟡 Near stop"
+                    else:
+                        pstatus = "🟢 Safe"
                 else:
-                    status = "🟢 Safe"
-            else:
-                cur_val = pnl = pnl_pct = r_mult = stop_dist = None
-                status = "⚪ No price"
+                    cur_val = pnl = pnl_pct = r_mult = stop_dist = None
+                    pstatus = "⚪ No price"
 
-            rows.append({
-                "status":     status,
-                "ticker":     ticker,
-                "market":     market,
-                "curr":       curr,
-                "sector":     p.get("sector", "Unknown"),
-                "entry_date": entry_date.strftime("%Y-%m-%d"),
-                "days_held":  days_held,
-                "entry_px":   entry_px,
-                "cur_px":     cur_px,
-                "stop":       stop,
-                "stop_dist":  stop_dist,
-                "shares":     shares,
-                "cost":       cost,
-                "cur_val":    cur_val,
-                "pnl":        pnl,
-                "pnl_pct":   pnl_pct,
-                "r_mult":     r_mult,
-                "regime":     regime,
-                "peak_px":    peak_px,
-                "atr":        atr,
-                "trail_mult": trail_mult,
-                "strategy":   strategy,
-                "lt_combined": p.get("lt_combined"),
-                "lt_grade":    p.get("lt_grade"),
-            })
+                rows.append({
+                    "status": pstatus, "ticker": ticker, "market": market,
+                    "curr": curr, "sector": p.get("sector", "Unknown"),
+                    "entry_date": entry_date.strftime("%Y-%m-%d"), "days_held": days_held,
+                    "entry_px": entry_px, "cur_px": cur_px, "stop": stop,
+                    "stop_dist": stop_dist, "shares": shares, "cost": cost,
+                    "cur_val": cur_val, "pnl": pnl, "pnl_pct": pnl_pct,
+                    "r_mult": r_mult, "regime": regime, "peak_px": peak_px,
+                    "atr": atr, "trail_mult": trail_mult,
+                    "lt_combined": p.get("lt_combined"), "lt_grade": p.get("lt_grade"),
+                })
 
-        # ── Global alerts (shown above all tabs) ─────────────────────────────
-        stop_hits = [r for r in rows if "STOP HIT" in r["status"]]
-        near_stps = [r for r in rows if "Near stop" in r["status"]]
-        if stop_hits:
-            st.error("🔴 **Stop breached — review immediately:** "
-                     + ", ".join(r["ticker"] for r in stop_hits))
-        if near_stps:
-            st.warning("🟡 **Within 5% of stop:** "
-                       + ", ".join(f"{r['ticker']} ({r['stop_dist']:.1f}%)"
-                                   for r in near_stps))
+            # ── Global alerts ────────────────────────────────────────────────
+            stop_hits = [r for r in rows if "STOP HIT" in r["status"]]
+            near_stps = [r for r in rows if "Near stop" in r["status"]]
+            if stop_hits:
+                st.error("🔴 **Stop breached — review immediately:** "
+                         + ", ".join(r["ticker"] for r in stop_hits))
+            if near_stps:
+                st.warning("🟡 **Within 5% of stop:** "
+                           + ", ".join(f"{r['ticker']} ({r['stop_dist']:.1f}%)"
+                                       for r in near_stps))
 
-        # ── Sub-tabs by region ────────────────────────────────────────────────
-        def _render_port_tab(tab_rows: list, market: str | None = None) -> None:
-            """Render summary + table + expanders for a given set of rows."""
-            if not tab_rows:
-                st.info(f"No open positions{f' in {market}' if market else ''}.")
-                return
+            # ── Per-region sub-tabs ───────────────────────────────────────────
+            def _render_region(tab_rows, market):
+                if not tab_rows:
+                    st.info(f"No open positions in {market}.")
+                    return
 
-            curr = _CURR_SYM.get(market, "$") if market else None
-            priced = [r for r in tab_rows if r["pnl"] is not None]
+                curr   = _CURR_SYM.get(market, "$")
+                priced = [r for r in tab_rows if r["pnl"] is not None]
+                deployed  = sum(r["cost"] for r in tab_rows)
+                cash      = max(100_000 - deployed, 0)
+                total_val = sum(r["cur_val"] for r in priced) if priced else None
+                total_pnl = sum(r["pnl"]    for r in priced) if priced else None
+                pnl_pct   = (total_pnl / deployed * 100
+                             if total_pnl is not None and deployed else None)
 
-            # Summary metrics
-            total_cost = sum(r["cost"] for r in tab_rows)
-            total_val  = sum(r["cur_val"] for r in priced) if priced else None
-            total_pnl  = sum(r["pnl"]  for r in priced)  if priced else None
-            pnl_pct_total = (total_pnl / total_cost * 100
-                             if total_pnl is not None and total_cost else None)
-
-            if market:
-                # Single currency — show clean totals
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric("Positions", len(tab_rows))
-                c2.metric(f"Invested ({curr})",
-                          f"{curr}{total_cost:,.0f}")
-                c3.metric(f"Unrealised P&L ({curr})",
+                # Equity breakdown row
+                c1, c2, c3, c4, c5 = st.columns(5)
+                c1.metric("Positions",  len(tab_rows))
+                c2.metric(f"Equity ({curr})", f"{curr}100,000")
+                c3.metric(f"Deployed ({curr})", f"{curr}{deployed:,.0f}")
+                c4.metric(f"Cash ({curr})", f"{curr}{cash:,.0f}")
+                c5.metric(f"Unrealised P&L",
                           f"{curr}{total_pnl:+,.0f}" if total_pnl is not None else "—",
-                          delta=f"{pnl_pct_total:+.2f}%" if pnl_pct_total is not None else None,
+                          delta=f"{pnl_pct:+.2f}%" if pnl_pct is not None else None,
                           delta_color="normal" if (total_pnl or 0) >= 0 else "inverse")
-                c4.metric("Current Value",
-                          f"{curr}{total_val:,.0f}" if total_val is not None else "—")
-            else:
-                # Overview: break down by market
-                mkt_groups: dict = {}
-                for r in tab_rows:
-                    mkt_groups.setdefault(r["market"], []).append(r)
 
-                c1, c2, c3 = st.columns(3)
-                c1.metric("Total Positions", len(tab_rows))
-                c2.metric("Markets", ", ".join(sorted(mkt_groups.keys())))
-                c3.metric("Alerts",
-                          f"🔴 {len(stop_hits)}  🟡 {len(near_stps)}"
-                          if (stop_hits or near_stps) else "✅ All safe")
+                st.markdown("---")
 
-                for mk, mk_rows in sorted(mkt_groups.items()):
-                    mk_curr  = _CURR_SYM.get(mk, "$")
-                    mk_cost  = sum(r["cost"] for r in mk_rows)
-                    mk_priced = [r for r in mk_rows if r["pnl"] is not None]
-                    mk_pnl   = sum(r["pnl"] for r in mk_priced) if mk_priced else None
-                    pnl_str  = f"{mk_curr}{mk_pnl:+,.0f}" if mk_pnl is not None else "—"
-                    st.caption(
-                        f"**{mk}** — Invested: {mk_curr}{mk_cost:,.0f}  ·  "
-                        f"P&L: {pnl_str}  ·  {len(mk_rows)} position(s)"
-                    )
-
-            st.markdown("---")
-
-            # Table
-            table_rows = []
-            for r in tab_rows:
-                table_rows.append({
+                tbl_df = pd.DataFrame([{
                     "Status":      r["status"],
-                    "Ticker":      r["ticker"] + (" 📈" if r["strategy"] == "longterm" else ""),
+                    "Ticker":      r["ticker"],
                     "Sector":      r["sector"],
                     "Days":        r["days_held"],
                     "Entry Px":    r["entry_px"],
@@ -1020,73 +1023,78 @@ with T_PORT:
                     "P&L":         r["pnl"],
                     "P&L %":       r["pnl_pct"],
                     "R-Mult":      r["r_mult"],
-                })
-            tbl_df = pd.DataFrame(table_rows)
-            st.dataframe(
-                tbl_df, width="stretch", hide_index=True,
-                column_config={
-                    "Status":      st.column_config.TextColumn("Status",   width="small"),
-                    "Ticker":      st.column_config.TextColumn("Ticker",   width="small"),
-                    "Days":        st.column_config.NumberColumn("Days",   format="%d"),
-                    "Entry Px":    st.column_config.NumberColumn("Entry Px",  format="%.2f"),
-                    "Live Px":     st.column_config.NumberColumn("Live Px",   format="%.2f"),
-                    "Stop":        st.column_config.NumberColumn("Stop",      format="%.2f"),
-                    "Stop Dist %": st.column_config.ProgressColumn(
-                                       "Stop Dist %", min_value=0, max_value=30,
-                                       format="%.1f%%"),
-                    "Shares":      st.column_config.NumberColumn("Shares", format="%d"),
-                    "P&L":         st.column_config.NumberColumn("P&L",    format="%+.0f"),
-                    "P&L %":       st.column_config.NumberColumn("P&L %",  format="%+.2f%%"),
-                    "R-Mult":      st.column_config.NumberColumn("R-Mult", format="%+.2fR"),
-                },
-            )
+                } for r in tab_rows])
+                st.dataframe(tbl_df, use_container_width=True, hide_index=True,
+                    column_config={
+                        "Status":      st.column_config.TextColumn(width="small"),
+                        "Days":        st.column_config.NumberColumn(format="%d"),
+                        "Entry Px":    st.column_config.NumberColumn(format="%.2f"),
+                        "Live Px":     st.column_config.NumberColumn(format="%.2f"),
+                        "Stop":        st.column_config.NumberColumn(format="%.2f"),
+                        "Stop Dist %": st.column_config.ProgressColumn(
+                                           min_value=0, max_value=30, format="%.1f%%"),
+                        "Shares":      st.column_config.NumberColumn(format="%d"),
+                        "P&L":         st.column_config.NumberColumn(format="%+.0f"),
+                        "P&L %":       st.column_config.NumberColumn(format="%+.2f%%"),
+                        "R-Mult":      st.column_config.NumberColumn(format="%+.2fR"),
+                    })
 
-            # Per-position expanders
-            st.subheader("Position Detail")
-            for r in tab_rows:
-                pnl_label = f"{r['curr']}{r['pnl']:+,.0f}" if r["pnl"] is not None else "—"
-                r_label   = f"{r['r_mult']:+.2f}R" if r["r_mult"] is not None else "—"
-                lt_badge  = "  📈 LT" if r["strategy"] == "longterm" else ""
-                with st.expander(
-                    f"**{r['ticker']}**{lt_badge}  ·  {r['status']}  ·  "
-                    f"P&L {pnl_label}  ·  {r_label}  ·  {r['days_held']}d"
-                ):
-                    c1, c2, c3 = st.columns(3)
-                    with c1:
-                        st.metric("Entry Price", f"{r['curr']}{r['entry_px']:,.2f}")
-                        st.metric("Live Price",  f"{r['curr']}{r['cur_px']:,.2f}"
-                                                 if r["cur_px"] else "—")
-                        st.metric("Entry Date",  r["entry_date"])
-                    with c2:
-                        st.metric("Stop Loss",    f"{r['curr']}{r['stop']:,.2f}")
-                        st.metric("Stop Cushion", f"{r['stop_dist']:.1f}%"
-                                                  if r["stop_dist"] is not None else "—")
-                        st.metric("Peak Price",   f"{r['curr']}{r['peak_px']:,.2f}")
-                    with c3:
-                        st.metric("ATR at Entry", f"{r['curr']}{r['atr']:.2f}")
-                        st.metric("Trail Stop",   f"{r['trail_mult']}× ATR")
-                        st.metric("Regime",       r["regime"])
-
-                    st.caption(
-                        f"Shares: {r['shares']}  ·  Cost: {r['curr']}{r['cost']:,.0f}"
-                        + (f"  ·  Value: {r['curr']}{r['cur_val']:,.0f}" if r["cur_val"] else "")
-                    )
-                    if r["strategy"] == "longterm":
+                st.subheader("Position Detail")
+                for r in tab_rows:
+                    pnl_label = f"{r['curr']}{r['pnl']:+,.0f}" if r["pnl"] is not None else "—"
+                    r_label   = f"{r['r_mult']:+.2f}R" if r["r_mult"] is not None else "—"
+                    with st.expander(
+                        f"**{r['ticker']}**  ·  {r['status']}  ·  "
+                        f"P&L {pnl_label}  ·  {r_label}  ·  {r['days_held']}d"
+                    ):
+                        c1, c2, c3 = st.columns(3)
+                        with c1:
+                            st.metric("Entry Price", f"{r['curr']}{r['entry_px']:,.2f}")
+                            st.metric("Live Price",  f"{r['curr']}{r['cur_px']:,.2f}" if r["cur_px"] else "—")
+                            st.metric("Entry Date",  r["entry_date"])
+                        with c2:
+                            st.metric("Stop Loss",    f"{r['curr']}{r['stop']:,.2f}")
+                            st.metric("Stop Cushion", f"{r['stop_dist']:.1f}%" if r["stop_dist"] is not None else "—")
+                            st.metric("Peak Price",   f"{r['curr']}{r['peak_px']:,.2f}")
+                        with c3:
+                            st.metric("ATR at Entry", f"{r['curr']}{r['atr']:.2f}")
+                            st.metric("Trail Stop",   f"{r['trail_mult']}× ATR")
+                            st.metric("Regime",       r["regime"])
                         st.caption(
-                            f"📈 Long-Term position  ·  "
-                            f"Combined score: {r['lt_combined']}  ·  Grade: {r['lt_grade']}  ·  "
-                            f"Exit trigger: SMA_200 cross"
+                            f"Shares: {r['shares']}  ·  Cost: {r['curr']}{r['cost']:,.0f}"
+                            + (f"  ·  Value: {r['curr']}{r['cur_val']:,.0f}" if r["cur_val"] else "")
                         )
+                        if _strat_key == "lt" and r.get("lt_combined"):
+                            st.caption(f"LT score: {r['lt_combined']}  ·  Grade: {r['lt_grade']}  ·  Exit: SMA_200 cross")
 
-        tab_ov, tab_us, tab_eu, tab_in = st.tabs(["🌍 Overview", "🇺🇸 US", "🇪🇺 EU", "🇮🇳 IN"])
-        with tab_ov:
-            _render_port_tab(rows, None)
-        with tab_us:
-            _render_port_tab([r for r in rows if r["market"] == "US"], "US")
-        with tab_eu:
-            _render_port_tab([r for r in rows if r["market"] == "EU"], "EU")
-        with tab_in:
-            _render_port_tab([r for r in rows if r["market"] == "IN"], "IN")
+            # ── Overview row: 3 regions side-by-side ─────────────────────────
+            tab_ov, tab_us, tab_eu, tab_in = st.tabs(["🌍 Overview", "🇺🇸 US", "🇪🇺 EU", "🇮🇳 IN"])
+            with tab_ov:
+                any_priced = [r for r in rows if r["pnl"] is not None]
+                ov_cols = st.columns(3)
+                for i, mk in enumerate(["US", "EU", "IN"]):
+                    mk_rows   = [r for r in rows if r["market"] == mk]
+                    mk_curr   = _CURR_SYM[mk]
+                    deployed  = sum(r["cost"] for r in mk_rows)
+                    cash      = max(100_000 - deployed, 0)
+                    mk_priced = [r for r in mk_rows if r["pnl"] is not None]
+                    pnl       = sum(r["pnl"] for r in mk_priced) if mk_priced else None
+                    with ov_cols[i]:
+                        st.markdown(f"**{mk}**")
+                        st.metric("Positions", len(mk_rows))
+                        st.metric(f"Deployed", f"{mk_curr}{deployed:,.0f}")
+                        st.metric(f"Cash", f"{mk_curr}{cash:,.0f}")
+                        st.metric(f"P&L",
+                                  f"{mk_curr}{pnl:+,.0f}" if pnl is not None else "—",
+                                  delta=f"{pnl/deployed*100:+.2f}%" if pnl and deployed else None)
+                if stop_hits or near_stps:
+                    st.warning(f"🔴 {len(stop_hits)} stop hit  ·  🟡 {len(near_stps)} near stop")
+            with tab_us:
+                _render_region([r for r in rows if r["market"] == "US"], "US")
+            with tab_eu:
+                _render_region([r for r in rows if r["market"] == "EU"], "EU")
+            with tab_in:
+                _render_region([r for r in rows if r["market"] == "IN"], "IN")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
