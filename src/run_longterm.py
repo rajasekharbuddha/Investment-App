@@ -111,63 +111,75 @@ def _lt_update_journal(candidates: list[dict], markets_obj: dict) -> None:
 
 
 def _lt_update_portfolio(candidates: list[dict], today) -> None:
-    """Add Tier-1 ENTER signals to positions.json (strategy=longterm)."""
+    """Add Tier-1 ENTER signals to lt_{market}.json (strategy=longterm, per-market)."""
     import json
 
-    port_path = ROOT / "portfolio" / "positions.json"
+    port_root = ROOT / "portfolio"
+    port_root.mkdir(exist_ok=True)
 
-    existing: list[dict] = []
-    if port_path.exists():
-        try:
-            existing = json.loads(port_path.read_text())
-        except Exception:
-            pass
+    today_str  = today.strftime("%Y-%m-%d")
+    added_all: list[str] = []
 
-    existing_tickers = {p["ticker"] for p in existing}
-    today_str = today.strftime("%Y-%m-%d")
-    added: list[str] = []
-
+    # Group candidates by market
+    by_market: dict[str, list] = {}
     for s in candidates:
-        ticker = s["ticker"]
-        if ticker in existing_tickers:
-            print(f"  Portfolio: {ticker} already tracked — skipped")
-            continue
+        mkt = s.get("market", "IN")
+        by_market.setdefault(mkt, []).append(s)
 
-        price  = float(s.get("price") or 0)
-        sma200 = s.get("sma200") or price * 0.85
-        atr    = s.get("atr") or (price * (s.get("atr_pct") or 2) / 100)
-        stop   = round(max(float(sma200), price - 8 * atr), 2)
+    for mkt, mkt_cands in by_market.items():
+        port_path = port_root / f"lt_{mkt}.json"
+        existing: list[dict] = []
+        if port_path.exists():
+            try:
+                existing = json.loads(port_path.read_text())
+            except Exception:
+                pass
 
-        existing.append({
-            "ticker":            ticker,
-            "market":            s.get("market", "IN"),
-            "sector":            s["fund_data"].get("sector", "Unknown"),
-            "entry_price":       round(price, 2),
-            "entry_date":        today_str,
-            "shares":            0,
-            "stop_loss":         stop,
-            "stop_loss_initial": stop,
-            "trail_mult":        8.0,
-            "peak_price":        round(price, 2),
-            "atr_at_entry":      round(atr, 4),
-            "risk_pct":          0.0,
-            "regime":            "Normal",
-            "is_high_vol":       False,
-            "cost":              0.0,
-            "strategy":          "longterm",
-            "lt_combined":       round(s["combined"], 1),
-            "lt_fund_score":     round(s["fund_score"], 1),
-            "lt_grade":          s["grade"],
-        })
-        added.append(ticker)
+        existing_tickers = {p["ticker"] for p in existing}
+        added: list[str] = []
 
-    if added:
-        port_path.parent.mkdir(exist_ok=True)
-        port_path.write_text(json.dumps(existing, indent=2))
-        print(f"  Portfolio: added {len(added)} LT position(s): {', '.join(added)}")
-        print(f"  \033[90m  -> Fill 'shares' and 'cost' in portfolio/positions.json "
-              f"after you execute the order\033[0m")
-    else:
+        for s in mkt_cands:
+            ticker = s["ticker"]
+            if ticker in existing_tickers:
+                print(f"  Portfolio: {ticker} already tracked — skipped")
+                continue
+
+            price  = float(s.get("price") or 0)
+            sma200 = s.get("sma200") or price * 0.85
+            atr    = s.get("atr") or (price * (s.get("atr_pct") or 2) / 100)
+            stop   = round(max(float(sma200), price - 8 * atr), 2)
+
+            existing.append({
+                "ticker":            ticker,
+                "market":            mkt,
+                "sector":            s["fund_data"].get("sector", "Unknown"),
+                "entry_price":       round(price, 2),
+                "entry_date":        today_str,
+                "shares":            0,
+                "stop_loss":         stop,
+                "stop_loss_initial": stop,
+                "trail_mult":        8.0,
+                "peak_price":        round(price, 2),
+                "atr_at_entry":      round(atr, 4),
+                "risk_pct":          0.0,
+                "regime":            "Normal",
+                "is_high_vol":       False,
+                "cost":              0.0,
+                "strategy":          "longterm",
+                "lt_combined":       round(s["combined"], 1),
+                "lt_fund_score":     round(s["fund_score"], 1),
+                "lt_grade":          s["grade"],
+            })
+            added.append(ticker)
+
+        if added:
+            port_path.write_text(json.dumps(existing, indent=2))
+            print(f"  Portfolio [{mkt}]: added {len(added)} LT position(s): {', '.join(added)}")
+            print(f"  \033[90m  -> Fill 'shares' and 'cost' in portfolio/lt_{mkt}.json "
+                  f"after you execute the order\033[0m")
+            added_all.extend(added)
+
+    if not added_all:
         print(f"  Portfolio: no new positions to add\n")
 
 
