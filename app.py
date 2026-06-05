@@ -1302,6 +1302,7 @@ class App(tk.Tk):
                 state="normal", text="▶  Run Daily Scan"))
             self.after(0, lambda: self._status.set(
                 f"Daily scan complete — {datetime.now().strftime('%H:%M:%S')}"))
+            self.after(0, self._refresh_reports)
 
     def _run_universe(self):
         if self._check_busy():

@@ -1106,16 +1106,45 @@ with T_REP:
     st.caption("All reports are auto-saved to reports/ after each scan or backtest.")
 
     reports_dir = ROOT / "reports"
-    txt_files   = sorted(reports_dir.glob("*.txt"), reverse=True) if reports_dir.exists() else []
 
-    if not txt_files:
-        st.info("No saved reports yet. Run the Daily Scan or a Backtest to generate reports.")
+    _rc1, _rc2 = st.columns([6, 1])
+    with _rc2:
+        if st.button("🔄 Refresh", key="rep_refresh"):
+            st.rerun()
+    with _rc1:
+        _rep_filter = st.selectbox(
+            "Filter by type",
+            ["All", "Daily Scan", "Backtest", "Long-Term", "Walk-Forward", "Other"],
+            key="rep_filter_type",
+            label_visibility="collapsed",
+        )
+
+    _prefix_map = {
+        "Daily Scan":   "daily",
+        "Backtest":     "backtest",
+        "Long-Term":    "longterm",
+        "Walk-Forward": "wfo",
+    }
+
+    all_txt = sorted(reports_dir.glob("*.txt"), reverse=True) if reports_dir.exists() else []
+    if _rep_filter != "All":
+        _pfx = _prefix_map.get(_rep_filter, "")
+        if _pfx:
+            all_txt = [f for f in all_txt if f.name.startswith(_pfx)]
+        else:
+            known = set(_prefix_map.values())
+            all_txt = [f for f in all_txt if not any(f.name.startswith(p) for p in known)]
+
+    if not all_txt:
+        st.info("No saved reports found. Run the Daily Scan or a Backtest to generate reports.")
     else:
         col_a, col_b = st.columns([1, 3])
         with col_a:
+            st.caption(f"{len(all_txt)} report(s)")
             selected_name = st.radio(
                 "Select report",
-                options=[f.name for f in txt_files],
+                options=[f.name for f in all_txt],
+                key="rep_selected",
                 label_visibility="collapsed",
             )
         with col_b:
@@ -1129,5 +1158,6 @@ with T_REP:
                 data=content,
                 file_name=selected_name,
                 mime="text/plain",
+                key="rep_download",
             )
             st.code(content, language=None)
