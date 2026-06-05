@@ -438,29 +438,25 @@ class App(tk.Tk):
 
     def _tab_portfolio(self, parent):
         _PORT_ROOT = ROOT / "portfolio"
+        _CURR = {"IN": "Rs", "US": "$", "EU": "€"}
 
         bar = tk.Frame(parent, bg=self.BG, padx=14, pady=12)
         bar.pack(fill="x")
-
         tk.Label(bar, text="Open Positions — Live P&L",
                  bg=self.BG, fg=self.ACCENT,
                  font=(_MONO, 11, "bold")).pack(side="left")
-
         self._port_last = tk.Label(bar, text="", bg=self.BG, fg=self.MUTED,
                                    font=(_MONO, 9))
         self._port_last.pack(side="right", padx=(0, 8))
-
         self._port_btn = self._button(bar, "↻  Refresh Prices", self._run_portfolio)
         self._port_btn.pack(side="right")
 
-        # Global alerts strip (above sub-tabs)
         self._port_alert_lbl = tk.Label(parent, text="",
                                         bg=self.BG2, fg=self.MUTED,
                                         font=(_MONO, 9, "bold"),
                                         anchor="w", padx=14, pady=4)
         self._port_alert_lbl.pack(fill="x")
 
-        # Style Treeview for dark theme
         pstyle = ttk.Style()
         pstyle.configure("Port.Treeview",
                          background=self.BG2, foreground=self.TEXT,
@@ -473,19 +469,12 @@ class App(tk.Tk):
                    background=[("selected", self.SURFACE)],
                    foreground=[("selected", self.WHITE)])
 
-        # Inner notebook — 4 regional sub-tabs
-        inner_nb = ttk.Notebook(parent)
-        inner_nb.pack(fill="both", expand=True, padx=4, pady=2)
-
-        _CURR = {"IN": "Rs", "US": "$", "EU": "€"}
         cols = ("Ticker", "Mkt", "Days", "Entry", "Live", "P&L", "P&L%",
                 "R×", "Stop", "Dist%", "Status")
         col_widths = {
             "Ticker": 110, "Mkt": 42, "Days": 42, "Entry": 82, "Live": 82,
             "P&L": 92, "P&L%": 62, "R×": 52, "Stop": 82, "Dist%": 58, "Status": 85,
         }
-
-        # (tab_label, market_key)  — None key = Overview (all regions)
         _SUB_TABS = [
             ("🌍  Overview", None),
             ("🇺🇸  US",      "US"),
@@ -493,73 +482,89 @@ class App(tk.Tk):
             ("🇮🇳  IN",      "IN"),
         ]
 
-        self._port_tabs: dict = {}
+        # Outer strategy notebook: Short-Term | Long-Term
+        strat_nb = ttk.Notebook(parent)
+        strat_nb.pack(fill="both", expand=True, padx=4, pady=2)
 
-        for tab_label, market in _SUB_TABS:
-            frm = tk.Frame(inner_nb, bg=self.BG)
-            inner_nb.add(frm, text=f"  {tab_label}  ")
+        # self._port_strat_tabs[strat_key][market_or_None] = {n_lbl, cost_lbl, pnl_lbl, tree, out}
+        self._port_strat_tabs: dict = {}
 
-            smry = tk.Frame(frm, bg=self.BG2, padx=14, pady=5)
-            smry.pack(fill="x")
+        for strat_key, strat_label in [("st", "📊  Short-Term"), ("lt", "🏦  Long-Term")]:
+            strat_frm = tk.Frame(strat_nb, bg=self.BG)
+            strat_nb.add(strat_frm, text=f"  {strat_label}  ")
 
-            n_lbl = tk.Label(smry, text="Positions: —",
-                             bg=self.BG2, fg=self.TEXT, font=(_MONO, 9))
-            n_lbl.pack(side="left", padx=(0, 20))
+            inner_nb = ttk.Notebook(strat_frm)
+            inner_nb.pack(fill="both", expand=True, padx=2, pady=2)
 
-            cost_lbl = tk.Label(smry, text="Invested: —",
-                                bg=self.BG2, fg=self.TEXT, font=(_MONO, 9))
-            cost_lbl.pack(side="left", padx=(0, 20))
+            self._port_strat_tabs[strat_key] = {}
 
-            pnl_lbl = tk.Label(smry, text="P&L: —",
-                               bg=self.BG2, fg=self.MUTED, font=(_MONO, 9))
-            pnl_lbl.pack(side="left")
+            for tab_label, market in _SUB_TABS:
+                frm = tk.Frame(inner_nb, bg=self.BG)
+                inner_nb.add(frm, text=f"  {tab_label}  ")
 
-            tv_frame = tk.Frame(frm, bg=self.BG, padx=8, pady=4)
-            tv_frame.pack(fill="x")
+                smry = tk.Frame(frm, bg=self.BG2, padx=14, pady=5)
+                smry.pack(fill="x")
 
-            tree = ttk.Treeview(tv_frame, columns=cols, show="headings",
-                                height=9, style="Port.Treeview",
-                                selectmode="browse")
-            for c in cols:
-                tree.heading(c, text=c)
-                tree.column(c, width=col_widths.get(c, 80),
-                            anchor="center", stretch=False)
+                n_lbl = tk.Label(smry, text="Positions: —",
+                                 bg=self.BG2, fg=self.TEXT, font=(_MONO, 9))
+                n_lbl.pack(side="left", padx=(0, 20))
 
-            vsb = ttk.Scrollbar(tv_frame, orient="vertical", command=tree.yview)
-            tree.configure(yscrollcommand=vsb.set)
-            tree.pack(side="left", fill="x", expand=True)
-            vsb.pack(side="right", fill="y")
+                cost_lbl = tk.Label(smry, text="Invested: —",
+                                    bg=self.BG2, fg=self.TEXT, font=(_MONO, 9))
+                cost_lbl.pack(side="left", padx=(0, 20))
 
-            tree.tag_configure("stop_hit",  foreground=self.RED)
-            tree.tag_configure("near_stop", foreground=self.YELLOW)
-            tree.tag_configure("safe",      foreground=self.GREEN)
-            tree.tag_configure("nodata",    foreground=self.MUTED)
+                pnl_lbl = tk.Label(smry, text="P&L: —",
+                                   bg=self.BG2, fg=self.MUTED, font=(_MONO, 9))
+                pnl_lbl.pack(side="left")
 
-            sep = tk.Frame(frm, bg=self.SURFACE, height=1)
-            sep.pack(fill="x", padx=8, pady=(4, 0))
+                tv_frame = tk.Frame(frm, bg=self.BG, padx=8, pady=4)
+                tv_frame.pack(fill="x")
 
-            tk.Label(frm, text="  Per-position details — click Refresh to load live prices",
-                     bg=self.BG, fg=self.MUTED, font=(_MONO, 9), anchor="w"
-                     ).pack(fill="x", padx=8)
+                tree = ttk.Treeview(tv_frame, columns=cols, show="headings",
+                                    height=9, style="Port.Treeview",
+                                    selectmode="browse")
+                for c in cols:
+                    tree.heading(c, text=c)
+                    tree.column(c, width=col_widths.get(c, 80),
+                                anchor="center", stretch=False)
 
-            out = self._terminal(frm)
+                vsb = ttk.Scrollbar(tv_frame, orient="vertical", command=tree.yview)
+                tree.configure(yscrollcommand=vsb.set)
+                tree.pack(side="left", fill="x", expand=True)
+                vsb.pack(side="right", fill="y")
 
-            self._port_tabs[market] = {
-                "n_lbl":    n_lbl,
-                "cost_lbl": cost_lbl,
-                "pnl_lbl":  pnl_lbl,
-                "tree":     tree,
-                "out":      out,
-            }
+                tree.tag_configure("stop_hit",  foreground=self.RED)
+                tree.tag_configure("near_stop", foreground=self.YELLOW)
+                tree.tag_configure("safe",      foreground=self.GREEN)
+                tree.tag_configure("nodata",    foreground=self.MUTED)
+
+                sep = tk.Frame(frm, bg=self.SURFACE, height=1)
+                sep.pack(fill="x", padx=8, pady=(4, 0))
+
+                hint = ("Run Daily Scan to populate." if strat_key == "st"
+                        else "Run LT Screener to populate.")
+                tk.Label(frm, text=f"  Per-position details — {hint}",
+                         bg=self.BG, fg=self.MUTED, font=(_MONO, 9), anchor="w"
+                         ).pack(fill="x", padx=8)
+
+                out = self._terminal(frm)
+
+                self._port_strat_tabs[strat_key][market] = {
+                    "n_lbl":    n_lbl,
+                    "cost_lbl": cost_lbl,
+                    "pnl_lbl":  pnl_lbl,
+                    "tree":     tree,
+                    "out":      out,
+                }
 
         self._port_root = _PORT_ROOT
         self._port_curr = _CURR
         self._port_load_static()
 
-    def _load_all_st_positions(self) -> list:
+    def _load_positions(self, strategy: str) -> list:
         positions = []
         for mkt in ("US", "EU", "IN"):
-            f = self._port_root / f"st_{mkt}.json"
+            f = self._port_root / f"{strategy}_{mkt}.json"
             if f.exists():
                 try:
                     rows = json.loads(f.read_text())
@@ -571,54 +576,62 @@ class App(tk.Tk):
         return positions
 
     def _port_load_static(self):
-        positions = self._load_all_st_positions()
-        if not positions:
-            for tab in self._port_tabs.values():
-                tab["n_lbl"].configure(text="Positions: 0  (no portfolio files found)")
-            return
-
-        for tab in self._port_tabs.values():
-            for item in tab["tree"].get_children():
-                tab["tree"].delete(item)
-
         _CURR = self._port_curr
         today = datetime.now().date()
-        mkt_counts: dict = {}
 
-        for pos in positions:
-            ticker   = pos.get("ticker", "?")
-            market   = pos.get("market", "?")
-            entry_px = float(pos.get("entry_price", 0))
-            stop     = float(pos.get("stop_loss", 0))
-            sym      = _CURR.get(market, "")
-            try:
-                ed   = datetime.strptime(pos.get("entry_date", ""), "%Y-%m-%d").date()
-                days = (today - ed).days
-            except Exception:
-                days = "?"
+        for strat_key in ("st", "lt"):
+            tabs      = self._port_strat_tabs[strat_key]
+            positions = self._load_positions(strat_key)
+            hint = ("Run Daily Scan to populate." if strat_key == "st"
+                    else "Run LT Screener to populate.")
 
-            row = (ticker, market, days,
-                   f"{sym}{entry_px:.2f}", "—", "—", "—", "—",
-                   f"{sym}{stop:.2f}", "—", "—")
+            for tab in tabs.values():
+                for item in tab["tree"].get_children():
+                    tab["tree"].delete(item)
 
-            self._port_tabs[None]["tree"].insert("", "end", values=row, tags=("nodata",))
-            if market in self._port_tabs:
-                self._port_tabs[market]["tree"].insert("", "end", values=row, tags=("nodata",))
-            mkt_counts[market] = mkt_counts.get(market, 0) + 1
-
-        n = len(positions)
-        mkt_str = "  ".join(f"{m}:{c}" for m, c in sorted(mkt_counts.items()))
-        self._port_tabs[None]["n_lbl"].configure(
-            text=f"Positions: {n}  [{mkt_str}]  (click Refresh for live prices)")
-        self._port_tabs[None]["cost_lbl"].configure(text="Invested: (see regional tabs)")
-        self._port_tabs[None]["pnl_lbl"].configure(text="")
-
-        for mkt, tab in self._port_tabs.items():
-            if mkt is None:
+            if not positions:
+                for tab in tabs.values():
+                    tab["n_lbl"].configure(text=f"Positions: 0  ({hint})")
                 continue
-            cnt = mkt_counts.get(mkt, 0)
-            tab["n_lbl"].configure(
-                text=f"Positions: {cnt}  (click Refresh for live prices)")
+
+            _CURR = self._port_curr
+            today = datetime.now().date()
+            mkt_counts: dict = {}
+
+            for pos in positions:
+                ticker   = pos.get("ticker", "?")
+                market   = pos.get("market", "?")
+                entry_px = float(pos.get("entry_price", 0))
+                stop     = float(pos.get("stop_loss", 0))
+                sym      = _CURR.get(market, "")
+                try:
+                    ed   = datetime.strptime(pos.get("entry_date", ""), "%Y-%m-%d").date()
+                    days = (today - ed).days
+                except Exception:
+                    days = "?"
+
+                row = (ticker, market, days,
+                       f"{sym}{entry_px:.2f}", "—", "—", "—", "—",
+                       f"{sym}{stop:.2f}", "—", "—")
+
+                tabs[None]["tree"].insert("", "end", values=row, tags=("nodata",))
+                if market in tabs:
+                    tabs[market]["tree"].insert("", "end", values=row, tags=("nodata",))
+                mkt_counts[market] = mkt_counts.get(market, 0) + 1
+
+            n = len(positions)
+            mkt_str = "  ".join(f"{m}:{c}" for m, c in sorted(mkt_counts.items()))
+            tabs[None]["n_lbl"].configure(
+                text=f"Positions: {n}  [{mkt_str}]  (click Refresh for live prices)")
+            tabs[None]["cost_lbl"].configure(text="Invested: (see regional tabs)")
+            tabs[None]["pnl_lbl"].configure(text="")
+
+            for mkt, tab in tabs.items():
+                if mkt is None:
+                    continue
+                cnt = mkt_counts.get(mkt, 0)
+                tab["n_lbl"].configure(
+                    text=f"Positions: {cnt}  (click Refresh for live prices)")
 
     def _run_portfolio(self):
         self._port_btn.configure(state="disabled", text="Fetching…")
@@ -626,15 +639,18 @@ class App(tk.Tk):
         threading.Thread(target=self._worker_portfolio, daemon=True).start()
 
     def _worker_portfolio(self):
-        positions = self._load_all_st_positions()
-        if not positions:
+        st_positions = self._load_positions("st")
+        lt_positions = self._load_positions("lt")
+        all_positions = st_positions + lt_positions
+
+        if not all_positions:
             self.after(0, lambda: self._port_btn.configure(
                 state="normal", text="↻  Refresh Prices"))
             self.after(0, lambda: self._status.set("No portfolio files found."))
             return
 
         import yfinance as yf
-        tickers = [p["ticker"] for p in positions]
+        tickers = list({p["ticker"] for p in all_positions})
         prices: dict = {}
 
         try:
@@ -654,7 +670,7 @@ class App(tk.Tk):
         except Exception:
             pass
 
-        for pos in positions:
+        for pos in all_positions:
             t = pos["ticker"]
             if t not in prices:
                 try:
@@ -664,157 +680,157 @@ class App(tk.Tk):
                 except Exception:
                     pass
 
-        self.after(0, lambda: self._update_portfolio_ui(positions, prices))
+        self.after(0, lambda: self._update_portfolio_ui(st_positions, lt_positions, prices))
 
-    def _update_portfolio_ui(self, positions: list, prices: dict):
-        for tab in self._port_tabs.values():
-            for item in tab["tree"].get_children():
-                tab["tree"].delete(item)
-
+    def _update_portfolio_ui(self, st_positions: list, lt_positions: list, prices: dict):
         _CURR = self._port_curr
         today = datetime.now().date()
-        alerts: list[str] = []
-        # detail parts per market key (None = overview)
-        all_details: dict = {None: [], "US": [], "EU": [], "IN": []}
-        # per-market accumulators
-        mkt_acc: dict = {}
+        all_alerts: list[str] = []
+        now_str = datetime.now().strftime("%H:%M:%S")
 
-        for pos in positions:
-            ticker    = pos.get("ticker", "?")
-            market    = pos.get("market", "?")
-            entry_px  = float(pos.get("entry_price", 0))
-            stop      = float(pos.get("stop_loss", 0))
-            stop_init = float(pos.get("stop_loss_initial", stop))
-            shares    = float(pos.get("shares", 0))
-            cost      = float(pos.get("cost", entry_px * shares))
-            atr       = float(pos.get("atr_at_entry", 0))
-            trail_m   = float(pos.get("trail_mult", 5.5))
-            regime    = pos.get("regime", "—")
-            sym       = _CURR.get(market, "")
+        for strat_key, positions in [("st", st_positions), ("lt", lt_positions)]:
+            tabs = self._port_strat_tabs[strat_key]
 
-            if market not in mkt_acc:
-                mkt_acc[market] = {"cost": 0.0, "pnl": 0.0, "n": 0, "n_priced": 0}
-            mkt_acc[market]["n"] += 1
-            mkt_acc[market]["cost"] += cost
+            for tab in tabs.values():
+                for item in tab["tree"].get_children():
+                    tab["tree"].delete(item)
 
-            try:
-                ed   = datetime.strptime(pos.get("entry_date", ""), "%Y-%m-%d").date()
-                days = (today - ed).days
-            except Exception:
-                days = "?"
+            alerts: list[str] = []
+            all_details: dict = {None: [], "US": [], "EU": [], "IN": []}
+            mkt_acc: dict = {}
 
-            cur_px = prices.get(ticker)
+            for pos in positions:
+                ticker    = pos.get("ticker", "?")
+                market    = pos.get("market", "?")
+                entry_px  = float(pos.get("entry_price", 0))
+                stop      = float(pos.get("stop_loss", 0))
+                stop_init = float(pos.get("stop_loss_initial", stop))
+                shares    = float(pos.get("shares", 0))
+                cost      = float(pos.get("cost", entry_px * shares))
+                atr       = float(pos.get("atr_at_entry", 0))
+                trail_m   = float(pos.get("trail_mult", 5.5))
+                regime    = pos.get("regime", "—")
+                sym       = _CURR.get(market, "")
 
-            if cur_px is not None:
-                pnl       = (cur_px - entry_px) * shares
-                pnl_pct   = (cur_px - entry_px) / entry_px * 100
-                init_risk  = entry_px - stop_init
-                r_mul     = (cur_px - entry_px) / init_risk if init_risk > 0 else float("nan")
-                stop_dist  = (cur_px - stop) / cur_px * 100 if cur_px > 0 else 0.0
-                mkt_acc[market]["pnl"]      += pnl
-                mkt_acc[market]["n_priced"] += 1
+                if market not in mkt_acc:
+                    mkt_acc[market] = {"cost": 0.0, "pnl": 0.0, "n": 0, "n_priced": 0}
+                mkt_acc[market]["n"] += 1
+                mkt_acc[market]["cost"] += cost
 
-                if cur_px <= stop:
-                    status = "STOP HIT"; tag = "stop_hit"
-                    alerts.append(f"STOP HIT  {ticker}: live {sym}{cur_px:.2f} ≤ stop {sym}{stop:.2f}")
-                elif stop_dist < 5.0:
-                    status = "NEAR STOP"; tag = "near_stop"
-                    alerts.append(f"Near stop  {ticker}: only {stop_dist:.1f}% cushion")
+                try:
+                    ed   = datetime.strptime(pos.get("entry_date", ""), "%Y-%m-%d").date()
+                    days = (today - ed).days
+                except Exception:
+                    days = "?"
+
+                cur_px = prices.get(ticker)
+
+                if cur_px is not None:
+                    pnl       = (cur_px - entry_px) * shares
+                    pnl_pct   = (cur_px - entry_px) / entry_px * 100
+                    init_risk = entry_px - stop_init
+                    r_mul     = (cur_px - entry_px) / init_risk if init_risk > 0 else float("nan")
+                    stop_dist = (cur_px - stop) / cur_px * 100 if cur_px > 0 else 0.0
+                    mkt_acc[market]["pnl"]      += pnl
+                    mkt_acc[market]["n_priced"] += 1
+
+                    if cur_px <= stop:
+                        status = "STOP HIT"; tag = "stop_hit"
+                        alerts.append(f"STOP HIT  {ticker}: {sym}{cur_px:.2f} ≤ stop {sym}{stop:.2f}")
+                    elif stop_dist < 5.0:
+                        status = "NEAR STOP"; tag = "near_stop"
+                        alerts.append(f"Near stop  {ticker}: {stop_dist:.1f}% cushion")
+                    else:
+                        status = "Safe"; tag = "safe"
+
+                    r_str    = f"{r_mul:.2f}R" if r_mul == r_mul else "—"
+                    live_str = f"{sym}{cur_px:.2f}"
+                    pnl_str  = f"{sym}{pnl:+.0f}"
+                    pct_str  = f"{pnl_pct:+.1f}%"
+                    dist_str = f"{stop_dist:.1f}%"
+
+                    lt_line = ""
+                    if strat_key == "lt":
+                        lt_line = (f"  LT Score: {pos.get('lt_combined','?')}  "
+                                   f"Grade: {pos.get('lt_grade','?')}  "
+                                   f"[Exit: SMA_200 cross]\n")
+                    detail = (
+                        f"\n{'─'*58}\n"
+                        f"  {ticker} ({market})  |  {days}d held  |  {status}"
+                        f"{'  [LT]' if strat_key == 'lt' else ''}\n"
+                        f"  Entry: {sym}{entry_px:.2f}  Live: {sym}{cur_px:.2f}  Stop: {sym}{stop:.2f}\n"
+                        f"  P&L: {sym}{pnl:+.0f} ({pnl_pct:+.1f}%)  R: {r_str}  Cushion: {stop_dist:.1f}%\n"
+                        f"  Shares: {shares:.0f}  Cost: {sym}{cost:,.0f}  "
+                        f"ATR: {sym}{atr:.2f}  Trail: {trail_m}×  Regime: {regime}\n"
+                        + lt_line
+                    )
                 else:
-                    status = "Safe"; tag = "safe"
+                    live_str = pnl_str = pct_str = r_str = dist_str = "—"
+                    status = "No data"; tag = "nodata"
+                    detail = f"\n  {ticker}: no live price data\n"
 
-                r_str    = f"{r_mul:.2f}R" if r_mul == r_mul else "—"
-                live_str = f"{sym}{cur_px:.2f}"
-                pnl_str  = f"{sym}{pnl:+.0f}"
-                pct_str  = f"{pnl_pct:+.1f}%"
-                dist_str = f"{stop_dist:.1f}%"
+                row_vals = (ticker, market, days,
+                            f"{sym}{entry_px:.2f}", live_str,
+                            pnl_str, pct_str, r_str,
+                            f"{sym}{stop:.2f}", dist_str, status)
 
-                strategy = pos.get("strategy", "")
-                lt_line  = ""
-                if strategy == "longterm":
-                    lt_line = (f"  LT Score: {pos.get('lt_combined','?')}  "
-                               f"Fund: {pos.get('lt_fund_score','?')}  "
-                               f"Grade: {pos.get('lt_grade','?')}  "
-                               f"[Exit: SMA_200 cross]\n")
+                tabs[None]["tree"].insert("", "end", values=row_vals, tags=(tag,))
+                if market in tabs:
+                    tabs[market]["tree"].insert("", "end", values=row_vals, tags=(tag,))
+                all_details[None].append(detail)
+                if market in all_details:
+                    all_details[market].append(detail)
 
-                detail = (
-                    f"\n{'─'*58}\n"
-                    f"  {ticker} ({market})  |  {days} days held  |  {status}"
-                    f"{'  [LT]' if strategy == 'longterm' else ''}\n"
-                    f"  Entry: {sym}{entry_px:.2f}   Live: {sym}{cur_px:.2f}   Stop: {sym}{stop:.2f}\n"
-                    f"  P&L: {sym}{pnl:+.0f} ({pnl_pct:+.1f}%)   R: {r_str}   Cushion: {stop_dist:.1f}%\n"
-                    f"  Shares: {shares:.0f}   Cost: {sym}{cost:,.0f}   "
-                    f"ATR@entry: {sym}{atr:.2f}   Trail: {trail_m}×   Regime: {regime}\n"
-                    + lt_line
-                )
-            else:
-                live_str = pnl_str = pct_str = r_str = dist_str = "—"
-                status = "No data"; tag = "nodata"
-                detail = f"\n  {ticker}: no live price data available\n"
+            # Update summary labels — Overview
+            n_total = sum(a["n"] for a in mkt_acc.values())
+            mkt_str = "  ".join(f"{m}:{a['n']}" for m, a in sorted(mkt_acc.items()))
+            ov = tabs[None]
+            ov["n_lbl"].configure(text=f"Positions: {n_total}  [{mkt_str}]")
+            ov["cost_lbl"].configure(text="Invested: (see regional tabs)")
+            ov["pnl_lbl"].configure(text="")
 
-            row_vals = (ticker, market, days,
-                        f"{sym}{entry_px:.2f}", live_str,
-                        pnl_str, pct_str, r_str,
-                        f"{sym}{stop:.2f}", dist_str, status)
+            # Update summary labels — regional tabs
+            for mkt, acc in mkt_acc.items():
+                if mkt not in tabs:
+                    continue
+                tab = tabs[mkt]
+                sym = _CURR.get(mkt, "")
+                tab["n_lbl"].configure(text=f"Positions: {acc['n']}")
+                tab["cost_lbl"].configure(text=f"Invested: {sym}{acc['cost']:,.0f}")
+                if acc["n_priced"] > 0:
+                    pnl_clr = self.GREEN if acc["pnl"] >= 0 else self.RED
+                    tab["pnl_lbl"].configure(text=f"P&L: {sym}{acc['pnl']:+,.0f}", fg=pnl_clr)
+                else:
+                    tab["pnl_lbl"].configure(text="P&L: —", fg=self.MUTED)
 
-            self._port_tabs[None]["tree"].insert("", "end", values=row_vals, tags=(tag,))
-            if market in self._port_tabs:
-                self._port_tabs[market]["tree"].insert("", "end", values=row_vals, tags=(tag,))
-
-            all_details[None].append(detail)
-            if market in all_details:
-                all_details[market].append(detail)
-
-        # Update summary labels — Overview
-        n_total = sum(a["n"] for a in mkt_acc.values())
-        mkt_str = "  ".join(f"{m}:{a['n']}" for m, a in sorted(mkt_acc.items()))
-        ov = self._port_tabs[None]
-        ov["n_lbl"].configure(text=f"Positions: {n_total}  [{mkt_str}]")
-        ov["cost_lbl"].configure(text="Invested: (see regional tabs)")
-        ov["pnl_lbl"].configure(text="")
-
-        # Update summary labels — regional tabs
-        for mkt, acc in mkt_acc.items():
-            if mkt not in self._port_tabs:
-                continue
-            tab = self._port_tabs[mkt]
-            sym = _CURR.get(mkt, "")
-            tab["n_lbl"].configure(text=f"Positions: {acc['n']}")
-            tab["cost_lbl"].configure(text=f"Invested: {sym}{acc['cost']:,.0f}")
-            if acc["n_priced"] > 0:
-                pnl_clr = self.GREEN if acc["pnl"] >= 0 else self.RED
-                tab["pnl_lbl"].configure(text=f"P&L: {sym}{acc['pnl']:+,.0f}", fg=pnl_clr)
-            else:
+            for mkt, tab in tabs.items():
+                if mkt is None or mkt in mkt_acc:
+                    continue
+                tab["n_lbl"].configure(text="Positions: 0")
+                tab["cost_lbl"].configure(text="Invested: —")
                 tab["pnl_lbl"].configure(text="P&L: —", fg=self.MUTED)
 
-        for mkt, tab in self._port_tabs.items():
-            if mkt is None or mkt in mkt_acc:
-                continue
-            tab["n_lbl"].configure(text="Positions: 0")
-            tab["cost_lbl"].configure(text="Invested: —")
-            tab["pnl_lbl"].configure(text="P&L: —", fg=self.MUTED)
+            # Populate detail terminals
+            for mkt, tab in tabs.items():
+                parts = all_details.get(mkt, [])
+                lbl   = "all positions" if mkt is None else mkt
+                self._clear(tab["out"])
+                hdr = f"Portfolio [{strat_key.upper()}] — {lbl} — {now_str}\n{'='*58}\n"
+                if alerts and mkt is None:
+                    hdr += "\nALERTS:\n" + "".join(f"  {a}\n" for a in alerts)
+                self._write(tab["out"], hdr + "".join(parts))
 
-        # Alerts strip
-        if alerts:
-            preview = "  |  ".join(alerts[:3]) + ("  …" if len(alerts) > 3 else "")
+            all_alerts.extend(alerts)
+
+        # Shared alerts strip
+        if all_alerts:
+            preview = "  |  ".join(all_alerts[:3]) + ("  …" if len(all_alerts) > 3 else "")
             self._port_alert_lbl.configure(
-                text=f"  ⚠  {len(alerts)} alert(s): {preview}", fg=self.RED)
+                text=f"  ⚠  {len(all_alerts)} alert(s): {preview}", fg=self.RED)
         else:
             self._port_alert_lbl.configure(text="  ✓ All positions safe", fg=self.GREEN)
 
-        now_str = datetime.now().strftime("%H:%M:%S")
         self._port_last.configure(text=f"Updated: {now_str}")
-
-        # Populate detail terminals for each sub-tab
-        for mkt, tab in self._port_tabs.items():
-            parts = all_details.get(mkt, [])
-            lbl   = "all positions" if mkt is None else mkt
-            self._clear(tab["out"])
-            hdr = f"Portfolio — {lbl} — fetched at {now_str}\n{'='*58}\n"
-            if alerts and mkt is None:
-                hdr += "\nALERTS:\n" + "".join(f"  {a}\n" for a in alerts)
-            self._write(tab["out"], hdr + "".join(parts))
-
         self._port_btn.configure(state="normal", text="↻  Refresh Prices")
         self._status.set(f"Portfolio refreshed — {now_str}")
 
