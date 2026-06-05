@@ -145,9 +145,19 @@ with T_SCAN:
                 with contextlib.redirect_stdout(buf):
                     raw_data = fetch_all(active_wl, years=3)
 
+                today_ts = (pd.Timestamp(scan_asof.strip()).normalize()
+                            if scan_asof.strip()
+                            else pd.Timestamp.today().normalize())
+
                 st.write(f"⚙ Calculating indicators for {len(raw_data)} tickers…")
                 with contextlib.redirect_stdout(buf):
-                    data_map = {t: calculate_all(df) for t, df in raw_data.items()}
+                    data_map_full = {t: calculate_all(df) for t, df in raw_data.items()}
+                    # Slice to as-of date — matches desktop app behaviour, prevents lookahead
+                    data_map = {
+                        t: df[df.index <= today_ts]
+                        for t, df in data_map_full.items()
+                        if not df[df.index <= today_ts].empty
+                    }
 
                     if dynamic_universe_s:
                         from select_stocks import dynamic_watchlist as _dyn_wl
@@ -181,10 +191,6 @@ with T_SCAN:
 
                     tuner  = AdaptiveTuner.load(str(TUNER_FILE))
                     engine = DecisionEngine(tuner=tuner)
-
-                    today_ts = (pd.Timestamp(scan_asof.strip()).normalize()
-                                if scan_asof.strip()
-                                else pd.Timestamp.today().normalize())
 
                     result = engine.run_day(
                         today=today_ts,
@@ -241,12 +247,13 @@ with T_SCAN:
                         if sz:
                             c["sizing"] = sz
 
+                    loaded_mode = result.get("loaded_tuner_mode", result["tuner_mode"])
                     report_text = daily_report(
                         decisions=candidates,
                         account_eur=equity_s,
                         watchlist=active_wl,
                         markets=MARKETS,
-                        tuner_mode=result["tuner_mode"],
+                        tuner_mode=loaded_mode,
                         risk_scale=result["risk_scale"],
                         quality_filtered=quality_filtered,
                         quality_scores=quality_scores,
@@ -257,7 +264,7 @@ with T_SCAN:
                     STATE_FILE.write_text(
                         json.dumps({"date": today_ts.strftime("%Y-%m-%d"),
                                     "decisions": candidates,
-                                    "tuner_mode": result["tuner_mode"]},
+                                    "tuner_mode": loaded_mode},
                                    indent=2, default=str))
 
                 status.update(label="Scan complete!", state="complete")
@@ -265,10 +272,13 @@ with T_SCAN:
             # Metric bar
             enters = [c for c in candidates if c.get("decision") == "ENTER"]
             nears  = [c for c in candidates if c.get("decision") == "NEAR"]
+            loaded_mode = result.get("loaded_tuner_mode", result["tuner_mode"])
+            next_mode   = result["tuner_mode"]
+            mode_label  = loaded_mode if loaded_mode == next_mode else f"{loaded_mode}→{next_mode}"
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("ENTER signals",   len(enters))
             m2.metric("NEAR signals",    len(nears))
-            m3.metric("Tuner mode",      result["tuner_mode"])
+            m3.metric("Tuner mode (used)", mode_label)
             m4.metric("Tickers scanned", len(candidates))
 
             st.code(_strip(report_text), language=None)

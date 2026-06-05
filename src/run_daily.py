@@ -218,12 +218,16 @@ def main() -> None:
         if sz:
             c["sizing"] = sz
 
+    loaded_mode = result.get("loaded_tuner_mode", result["tuner_mode"])
+    next_mode   = result["tuner_mode"]
+    if loaded_mode != next_mode:
+        print(f"  [tuner] Mode shifted: {loaded_mode} → {next_mode} (applies next scan)")
     daily_report(
         decisions=candidates,
         account_eur=ACCOUNT["equity"],
         watchlist=active_wl,
         markets=MARKETS,
-        tuner_mode=result["tuner_mode"],
+        tuner_mode=loaded_mode,
         risk_scale=result["risk_scale"],
         quality_filtered=result.get("quality_filtered", quality_filtered),
         quality_scores=result.get("quality_scores", quality_scores),

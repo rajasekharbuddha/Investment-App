@@ -83,7 +83,8 @@ class DecisionEngine:
         if quality_scores is not None:
             self._quality_scores = quality_scores
 
-        # Phase 1: read tuner
+        # Phase 1: read tuner — capture mode before Phase 7 updates it
+        loaded_tuner_mode = self.tuner.mode
         tuner_params = self.tuner.get_params()
 
         # Flat set of all tickers in today's active universe — used in the
@@ -217,7 +218,8 @@ class DecisionEngine:
             "candidates":         candidates,
             "sizing":             sizing,
             "tuner_updates":      tuner_updates,
-            "tuner_mode":         self.tuner.mode,
+            "tuner_mode":         self.tuner.mode,       # post-scan (next run's mode)
+            "loaded_tuner_mode":  loaded_tuner_mode,     # mode used for THIS scan
             "risk_scale":         risk_scale,
             "market_density":     market_density,
             "quality_filtered":   quality_filtered,
