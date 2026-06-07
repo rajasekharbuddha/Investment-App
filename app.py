@@ -193,6 +193,7 @@ class App(tk.Tk):
             ("posttrade",   "  Post-Trade  ",      self._tab_posttrade),
             ("backtest",    "  Backtest  ",        self._tab_backtest),
             ("longterm",    "  Long-Term  ",       self._tab_longterm),
+            ("sip",         "  SIP Plan  ",        self._tab_sip),
             ("portfolio",   "  Portfolio  ",       self._tab_portfolio),
             ("reports",     "  Reports  ",         self._tab_reports),
             ("replacement", "  Bench List  ",      self._tab_replacement),
@@ -1562,6 +1563,218 @@ class App(tk.Tk):
                 state="normal", text="▶  Build Bench List"))
             self.after(0, lambda: self._status.set(
                 f"Bench list complete — {datetime.now().strftime('%H:%M:%S')}"))
+
+    # ═══════════════════════════════ SIP PLAN ════════════════════════════════
+
+    def _tab_sip(self, parent):
+        bar = tk.Frame(parent, bg=self.BG, padx=14, pady=12)
+        bar.pack(fill="x")
+
+        self._sip_markets = self._combo(bar, "Markets:", ["US,EU,IN", "US,EU", "US", "EU", "IN"], "US,EU,IN", 12)
+        self._sip_budget  = self._entry(bar, "Budget €:", "2000", 6)
+        self._sip_minq    = self._entry(bar, "Min-Q:", "55", 4)
+        self._sip_topn    = self._entry(bar, "Top-N/mkt:", "100", 5)
+
+        self._sip_dry = tk.BooleanVar(value=True)
+        tk.Checkbutton(bar, text="Dry run", variable=self._sip_dry,
+                       bg=self.BG, fg=self.MUTED, selectcolor=self.SURFACE,
+                       activebackground=self.BG, activeforeground=self.ACCENT,
+                       font=(_MONO, 9)).pack(side="left", padx=(0, 8))
+
+        self._sip_btn = self._button(bar, "▶  Run Monthly Cycle", self._run_sip_cycle)
+        self._sip_btn.pack(side="left", padx=(8, 4))
+
+        self._sip_bt_btn = self._button(bar, "▶  Run Backtest", self._run_sip_backtest)
+        self._sip_bt_btn.pack(side="left", padx=(4, 8))
+
+        self._sip_start = self._entry(bar, "BT Start:", "2016-01-01", 12)
+
+        self._button(bar, "Clear", lambda: self._clear(self._sip_out), w=6
+                     ).pack(side="left", padx=(4, 0))
+
+        tk.Label(parent,
+                 text="  Monthly SIP: deploy fixed budget into top-ranked US/EU/IN stocks  "
+                      "|  SMA uptrend + Q-score + momentum rank  |  SMA-breakdown exits",
+                 bg=self.BG, fg=self.MUTED, font=(_MONO, 9), anchor="w"
+                 ).pack(fill="x", padx=14, pady=(0, 2))
+
+        self._sip_out = self._terminal(parent)
+
+    def _run_sip_cycle(self):
+        if self._check_busy():
+            return
+        self._clear(self._sip_out)
+        self._target = self._sip_out
+        self._busy   = True
+        self._sip_btn.configure(state="disabled", text="Running…")
+        markets = [m.strip().upper() for m in self._sip_markets.get().split(",")]
+        try:
+            budget = float(self._sip_budget.get())
+            min_q  = float(self._sip_minq.get())
+            top_n  = int(self._sip_topn.get())
+        except ValueError:
+            budget, min_q, top_n = 2000.0, 55.0, 100
+        dry_run = self._sip_dry.get()
+        threading.Thread(target=self._worker_sip_cycle,
+                         args=(markets, budget, min_q, top_n, dry_run), daemon=True).start()
+
+    def _worker_sip_cycle(self, markets, budget, min_q, top_n, dry_run):
+        import contextlib, traceback
+        w = _QWriter(self._q)
+        try:
+            with contextlib.redirect_stdout(w), contextlib.redirect_stderr(w):
+                from universe import get_dynamic_watchlist
+                from data import fetch_history
+                from indicators import calculate_all
+                from fundamental import fetch_fundamentals, score_fundamentals
+                from sip_strategy import run_sip_cycle
+
+                w.write(f"\n[SIP] Monthly cycle — markets: {markets}  budget: €{budget:,.0f}\n")
+
+                wl = get_dynamic_watchlist(markets, top_n_map={m: top_n for m in markets})
+                all_tickers = [t for m in markets for t in wl.get(m, [])]
+                w.write(f"[SIP] Universe: {len(all_tickers)} tickers\n")
+
+                data_map: dict = {}
+                for i, ticker in enumerate(all_tickers):
+                    if i % 20 == 0:
+                        w.write(f"      price data {i}/{len(all_tickers)}...\n")
+                    try:
+                        df = fetch_history(ticker, years=1)
+                        if df is not None and len(df) >= 60:
+                            data_map[ticker] = calculate_all(df)
+                    except Exception:
+                        pass
+                w.write(f"[SIP] {len(data_map)} tickers with price data\n")
+
+                q_scores: dict = {}
+                for i, ticker in enumerate(all_tickers):
+                    if i % 20 == 0:
+                        w.write(f"      Q-scores {i}/{len(all_tickers)}...\n")
+                    try:
+                        raw = fetch_fundamentals(ticker, use_cache=True)
+                        score, _ = score_fundamentals(raw)
+                        q_scores[ticker] = score
+                    except Exception:
+                        q_scores[ticker] = 0.0
+
+                result = run_sip_cycle(
+                    data_map=data_map,
+                    q_scores=q_scores,
+                    override_budget=budget,
+                    override_min_q=min_q,
+                    dry_run=dry_run,
+                )
+                w.write(result["report_text"])
+
+                if not dry_run:
+                    from pathlib import Path
+                    from datetime import datetime as _dt
+                    rpath = Path(__file__).parent / "reports" / f"sip-{_dt.now().strftime('%Y-%m-%d')}.txt"
+                    rpath.write_text(result["report_text"], encoding="utf-8")
+                    w.write(f"\n[SIP] Report saved → {rpath}\n")
+                else:
+                    w.write("\n[SIP] Dry run — state not saved.\n")
+
+        except Exception as exc:
+            w.write(f"\n\033[91mError: {exc}\033[0m\n{traceback.format_exc()}")
+        finally:
+            self._busy = False
+            self.after(0, lambda: self._sip_btn.configure(state="normal", text="▶  Run Monthly Cycle"))
+            self.after(0, lambda: self._status.set(f"SIP cycle complete — {datetime.now().strftime('%H:%M:%S')}"))
+
+    def _run_sip_backtest(self):
+        if self._check_busy():
+            return
+        self._clear(self._sip_out)
+        self._target = self._sip_out
+        self._busy   = True
+        self._sip_bt_btn.configure(state="disabled", text="Running…")
+        markets = [m.strip().upper() for m in self._sip_markets.get().split(",")]
+        try:
+            budget = float(self._sip_budget.get())
+            top_n  = int(self._sip_topn.get())
+            start  = self._sip_start.get().strip() or "2016-01-01"
+        except ValueError:
+            budget, top_n, start = 2000.0, 50, "2016-01-01"
+        threading.Thread(target=self._worker_sip_backtest,
+                         args=(markets, budget, top_n, start), daemon=True).start()
+
+    def _worker_sip_backtest(self, markets, budget, top_n, start):
+        import contextlib, traceback
+        w = _QWriter(self._q)
+        try:
+            with contextlib.redirect_stdout(w), contextlib.redirect_stderr(w):
+                from universe import get_dynamic_watchlist
+                from data import fetch_history
+                from indicators import calculate_all
+                from backtest_sip import run_sip_backtest
+
+                w.write(f"\n[SIP BT] {start} → today  |  markets: {markets}  budget: €{budget:,.0f}\n")
+                w.write(f"[SIP BT] Fetching 11-year history for {top_n} tickers/market...\n")
+                w.write("         (parquet cache speeds up subsequent runs)\n\n")
+
+                wl = get_dynamic_watchlist(markets, top_n_map={m: top_n for m in markets})
+                all_tickers = [t for m in markets for t in wl.get(m, [])]
+
+                import pandas as _pd_sip
+                start_ts = _pd_sip.Timestamp(start)
+                from data import CACHE_DIR as _SIP_CACHE_DIR
+                data_map: dict = {}
+                for i, ticker in enumerate(all_tickers):
+                    if i % 10 == 0:
+                        w.write(f"      {i}/{len(all_tickers)} price history...\n")
+                    try:
+                        _safe   = ticker.replace("/", "_")
+                        _cache  = _SIP_CACHE_DIR / f"{_safe}.parquet"
+                        _use_cache = True
+                        if _cache.exists():
+                            try:
+                                _cdf = _pd_sip.read_parquet(_cache)
+                                if _cdf.empty or _cdf.index[0] > start_ts:
+                                    _use_cache = False
+                            except Exception:
+                                _use_cache = False
+                        df = fetch_history(ticker, years=11, use_cache=_use_cache)
+                        if df is not None and len(df) >= 250:
+                            data_map[ticker] = calculate_all(df)
+                    except Exception:
+                        pass
+                w.write(f"[SIP BT] {len(data_map)} tickers ready\n")
+
+                bench_df = None
+                try:
+                    bench_df = fetch_history("^GSPC", years=11)
+                    w.write("[SIP BT] Benchmark ^GSPC loaded\n")
+                except Exception:
+                    w.write("[SIP BT] Benchmark unavailable\n")
+
+                w.write("[SIP BT] Simulating...\n\n")
+                result = run_sip_backtest(
+                    data_map=data_map,
+                    benchmark_df=bench_df,
+                    start=start,
+                    monthly_budget=budget,
+                    markets=markets,
+                )
+
+                if "error" in result:
+                    w.write(f"\nError: {result['error']}\n")
+                else:
+                    w.write(result["report_text"])
+                    from pathlib import Path
+                    from datetime import datetime as _dt
+                    rpath = (Path(__file__).parent / "reports" /
+                             f"sip-backtest-{_dt.now().strftime('%Y-%m-%d')}-{'_'.join(markets)}.txt")
+                    rpath.write_text(result["report_text"], encoding="utf-8")
+                    w.write(f"\n[SIP BT] Report saved → {rpath}\n")
+
+        except Exception as exc:
+            w.write(f"\n\033[91mError: {exc}\033[0m\n{traceback.format_exc()}")
+        finally:
+            self._busy = False
+            self.after(0, lambda: self._sip_bt_btn.configure(state="normal", text="▶  Run Backtest"))
+            self.after(0, lambda: self._status.set(f"SIP backtest complete — {datetime.now().strftime('%H:%M:%S')}"))
 
     def _run_longterm(self):
         if self._check_busy():

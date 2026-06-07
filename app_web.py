@@ -8,6 +8,7 @@ Original Tkinter desktop app preserved as app_tkinter.py
 import contextlib
 import io
 import json
+import math
 import re
 import sys
 from datetime import date, datetime
@@ -834,202 +835,354 @@ with T_MC:
 
 with T_SIP:
     st.header("💰 Monthly SIP Plan — US + EU Equity Accumulation")
-    st.caption(
-        "Deploy a fixed monthly budget into quality US + EU stocks. "
-        "Selection: SMA uptrend + Q-score ≥ 55 + ranked by momentum. "
-        "Exits: SMA breakdown (10d) or Q-score < 35."
-    )
+    sip_subtab_cycle, sip_subtab_bt = st.tabs(["📅 Monthly Cycle", "📊 SIP Backtest"])
 
-    # ── Sidebar / config ──────────────────────────────────────────────────────
-    sip_c1, sip_c2, sip_c3, sip_c4 = st.columns(4)
-    with sip_c1:
-        sip_budget = st.number_input("Monthly Budget (€)", min_value=200, max_value=50000,
-                                     value=2000, step=100, key="sip_budget")
-    with sip_c2:
-        sip_markets_sel = st.multiselect("Markets", ["US", "EU"], default=["US", "EU"], key="sip_mkts")
-    with sip_c3:
-        sip_min_q = st.slider("Min Q-Score", 30, 80, 55, key="sip_minq")
-    with sip_c4:
-        sip_top_n = st.number_input("Universe size / market", min_value=20, max_value=500,
-                                     value=100, step=10, key="sip_topn")
+    # ══════════════════════════════════════════════════════════════════════════
+    # SUB-TAB A — Monthly Cycle
+    # ══════════════════════════════════════════════════════════════════════════
+    with sip_subtab_cycle:
+        st.caption(
+            "Deploy a fixed monthly budget into quality US + EU stocks. "
+            "Selection: SMA uptrend + Q-score ≥ 55 + ranked by momentum. "
+            "Exits: SMA breakdown (10d) or Q-score < 35."
+        )
 
-    sip_dry = st.checkbox("Dry run (preview only — don't save state)", value=True, key="sip_dry")
+        sip_c1, sip_c2, sip_c3, sip_c4 = st.columns(4)
+        with sip_c1:
+            sip_budget = st.number_input("Monthly Budget (€)", min_value=200, max_value=50000,
+                                         value=2000, step=100, key="sip_budget")
+        with sip_c2:
+            sip_markets_sel = st.multiselect("Markets", ["US", "EU", "IN"], default=["US", "EU", "IN"], key="sip_mkts")
+        with sip_c3:
+            sip_min_q = st.slider("Min Q-Score", 30, 80, 55, key="sip_minq")
+        with sip_c4:
+            sip_top_n = st.number_input("Universe size / market", min_value=20, max_value=500,
+                                         value=100, step=10, key="sip_topn")
 
-    if st.button("▶ Run Monthly SIP Cycle", key="sip_run", type="primary"):
-        if not sip_markets_sel:
-            st.error("Select at least one market.")
-        else:
-            import sys as _sys
-            _sys.path.insert(0, str(ROOT / "src"))
+        sip_dry = st.checkbox("Dry run (preview only — don't save state)", value=True, key="sip_dry")
 
-            with st.spinner("Building universe…"):
-                try:
-                    from universe import get_dynamic_watchlist
-                    top_n_map = {m: int(sip_top_n) for m in sip_markets_sel}
-                    watchlist = get_dynamic_watchlist(sip_markets_sel, top_n_map=top_n_map)
-                    all_tickers = [t for m in sip_markets_sel for t in watchlist.get(m, [])]
-                except Exception as _e:
-                    st.error(f"Universe build failed: {_e}")
-                    all_tickers = []
+        if st.button("▶ Run Monthly SIP Cycle", key="sip_run", type="primary"):
+            if not sip_markets_sel:
+                st.error("Select at least one market.")
+            else:
+                import sys as _sys
+                _sys.path.insert(0, str(ROOT / "src"))
 
-            if all_tickers:
-                _prog = st.progress(0, text="Fetching price data…")
-                with st.spinner("Fetching price data and indicators…"):
-                    from data import fetch_ticker
-                    from indicators import calculate_all
-                    _data_map: dict = {}
-                    for _i, _t in enumerate(all_tickers):
-                        _prog.progress(int(_i / len(all_tickers) * 40), text=f"Price data {_i}/{len(all_tickers)}…")
-                        try:
-                            _df = fetch_ticker(_t, lookback_days=300)
-                            if _df is not None and len(_df) >= 60:
-                                _data_map[_t] = calculate_all(_df)
-                        except Exception:
-                            pass
+                with st.spinner("Building universe…"):
+                    try:
+                        from universe import get_dynamic_watchlist
+                        top_n_map = {m: int(sip_top_n) for m in sip_markets_sel}
+                        watchlist = get_dynamic_watchlist(sip_markets_sel, top_n_map=top_n_map)
+                        all_tickers = [t for m in sip_markets_sel for t in watchlist.get(m, [])]
+                    except Exception as _e:
+                        st.error(f"Universe build failed: {_e}")
+                        all_tickers = []
 
-                with st.spinner("Fetching fundamental Q-scores…"):
-                    from fundamental import fetch_fundamentals, score_fundamentals
-                    _q_scores: dict = {}
-                    for _i, _t in enumerate(all_tickers):
-                        _prog.progress(40 + int(_i / len(all_tickers) * 55), text=f"Q-scores {_i}/{len(all_tickers)}…")
-                        try:
-                            _raw = fetch_fundamentals(_t, use_cache=True)
-                            _sc, _ = score_fundamentals(_raw)
-                            _q_scores[_t] = _sc
-                        except Exception:
-                            _q_scores[_t] = 0.0
+                if all_tickers:
+                    _prog = st.progress(0, text="Fetching price data…")
+                    with st.spinner("Fetching price data and indicators…"):
+                        from data import fetch_history
+                        from indicators import calculate_all
+                        _data_map: dict = {}
+                        for _i, _t in enumerate(all_tickers):
+                            _prog.progress(int(_i / len(all_tickers) * 40), text=f"Price data {_i}/{len(all_tickers)}…")
+                            try:
+                                _df = fetch_history(_t, years=1)
+                                if _df is not None and len(_df) >= 60:
+                                    _data_map[_t] = calculate_all(_df)
+                            except Exception:
+                                pass
 
-                _prog.progress(100, text="Running SIP cycle…")
-                with st.spinner("Running SIP selection…"):
-                    from sip_strategy import run_sip_cycle
-                    _result = run_sip_cycle(
-                        data_map=_data_map,
-                        q_scores=_q_scores,
-                        override_budget=float(sip_budget),
-                        override_min_q=float(sip_min_q),
-                        dry_run=bool(sip_dry),
-                    )
+                    with st.spinner("Fetching fundamental Q-scores…"):
+                        from fundamental import fetch_fundamentals, score_fundamentals
+                        _q_scores: dict = {}
+                        for _i, _t in enumerate(all_tickers):
+                            _prog.progress(40 + int(_i / len(all_tickers) * 55), text=f"Q-scores {_i}/{len(all_tickers)}…")
+                            try:
+                                _raw = fetch_fundamentals(_t, use_cache=True)
+                                _sc, _ = score_fundamentals(_raw)
+                                _q_scores[_t] = _sc
+                            except Exception:
+                                _q_scores[_t] = 0.0
 
-                _prog.empty()
-                st.success(f"Cycle complete — {datetime.now().strftime('%Y-%m-%d')}")
+                    _prog.progress(100, text="Running SIP cycle…")
+                    with st.spinner("Running SIP selection…"):
+                        from sip_strategy import run_sip_cycle
+                        _result = run_sip_cycle(
+                            data_map=_data_map,
+                            q_scores=_q_scores,
+                            override_budget=float(sip_budget),
+                            override_min_q=float(sip_min_q),
+                            dry_run=bool(sip_dry),
+                        )
 
-                # ── Exits
-                _exits = _result["exits"]
-                st.subheader(f"Exit / Trim Signals ({len(_exits)})")
-                if _exits:
-                    _exit_rows = []
-                    for _e in _exits:
-                        _exit_rows.append({
-                            "Action":  _e["action"],
-                            "Ticker":  _e["ticker"],
-                            "Shares":  _e["shares"],
-                            "Price €": round(_e["current_price"], 2),
-                            "Gain %":  _e["gain_pct"],
-                            "Reason":  _e["reason"],
-                        })
-                    st.dataframe(_exit_rows, use_container_width=True)
-                else:
-                    st.info("No exit signals — all holdings healthy.")
+                    _prog.empty()
+                    st.success(f"Cycle complete — {datetime.now().strftime('%Y-%m-%d')}")
 
-                # ── This month's buys
-                _alloc = _result["allocation"]
-                st.subheader(f"This Month's Buys — €{sum(_alloc.values()):,.0f} deployed")
-                if _alloc:
-                    _buy_rows = []
-                    for _tk, _eur in _alloc.items():
-                        _c = next((x for x in _result["candidates"] if x["ticker"] == _tk), {})
-                        _buy_rows.append({
-                            "Ticker":  _tk,
-                            "Market":  _c.get("market", ""),
-                            "Sector":  _c.get("sector", ""),
-                            "€ Amount": _eur,
-                            "~Shares": round(_eur / _c.get("price", 1), 1) if _c.get("price") else "—",
-                            "Price €": round(_c.get("price", 0), 2),
-                            "Q-Score": round(_c.get("q_score", 0)),
-                            "Mom %":   round(_c.get("momentum", 0) * 100, 1),
-                            "Score":   round(_c.get("composite", 0), 3),
-                        })
-                    st.dataframe(_buy_rows, use_container_width=True)
-                else:
-                    st.warning("No qualifying candidates this month — hold cash.")
+                    _exits = _result["exits"]
+                    st.subheader(f"Exit / Trim Signals ({len(_exits)})")
+                    if _exits:
+                        st.dataframe([{
+                            "Action": _e["action"], "Ticker": _e["ticker"],
+                            "Shares": _e["shares"], "Price €": round(_e["current_price"], 2),
+                            "Gain %": _e["gain_pct"], "Reason": _e["reason"],
+                        } for _e in _exits], use_container_width=True)
+                    else:
+                        st.info("No exit signals — all holdings healthy.")
 
-                # ── All candidates
-                with st.expander(f"All {len(_result['candidates'])} passing candidates"):
-                    _cand_rows = []
-                    for _c in _result["candidates"]:
-                        _cand_rows.append({
-                            "Ticker":   _c["ticker"],
-                            "Market":   _c["market"],
-                            "Sector":   _c["sector"],
-                            "Q-Score":  round(_c["q_score"]),
-                            "Mom %":    round(_c["momentum"] * 100, 1),
-                            "Score":    round(_c["composite"], 3),
-                            "Price €":  round(_c["price"], 2),
+                    _alloc = _result["allocation"]
+                    st.subheader(f"This Month's Buys — €{sum(_alloc.values()):,.0f} deployed")
+                    if _alloc:
+                        _buy_rows = []
+                        for _tk, _eur in _alloc.items():
+                            _c = next((x for x in _result["candidates"] if x["ticker"] == _tk), {})
+                            _buy_rows.append({
+                                "Ticker": _tk, "Market": _c.get("market", ""),
+                                "Sector": _c.get("sector", ""), "€ Amount": _eur,
+                                "~Shares": round(_eur / _c.get("price", 1), 1) if _c.get("price") else "—",
+                                "Price €": round(_c.get("price", 0), 2),
+                                "Q-Score": round(_c.get("q_score", 0)),
+                                "Mom %": round(_c.get("momentum", 0) * 100, 1),
+                                "Score": round(_c.get("composite", 0), 3),
+                            })
+                        st.dataframe(_buy_rows, use_container_width=True)
+                    else:
+                        st.warning("No qualifying candidates this month — hold cash.")
+
+                    with st.expander(f"All {len(_result['candidates'])} passing candidates"):
+                        st.dataframe([{
+                            "Ticker": _c["ticker"], "Market": _c["market"],
+                            "Sector": _c["sector"], "Q-Score": round(_c["q_score"]),
+                            "Mom %": round(_c["momentum"] * 100, 1),
+                            "Score": round(_c["composite"], 3),
+                            "Price €": round(_c["price"], 2),
                             "Selected": "✓" if _c["ticker"] in _alloc else "",
-                        })
-                    st.dataframe(_cand_rows, use_container_width=True)
+                        } for _c in _result["candidates"]], use_container_width=True)
 
-                # ── Report text
-                with st.expander("Full text report"):
-                    st.code(_result["report_text"])
+                    with st.expander("Full text report"):
+                        st.code(_result["report_text"])
 
-                if not sip_dry:
-                    # Save report to reports/
-                    _rpath = ROOT / "reports" / f"sip-{datetime.now().strftime('%Y-%m-%d')}.txt"
-                    _rpath.write_text(_result["report_text"], encoding="utf-8")
-                    st.caption(f"Report saved → {_rpath}")
+                    if not sip_dry:
+                        _rpath = ROOT / "reports" / f"sip-{datetime.now().strftime('%Y-%m-%d')}.txt"
+                        _rpath.write_text(_result["report_text"], encoding="utf-8")
+                        st.caption(f"Report saved → {_rpath}")
 
-    # ── Strategy reference card ───────────────────────────────────────────────
-    with st.expander("Strategy Rules Reference"):
-        st.markdown("""
+        with st.expander("Strategy Rules Reference"):
+            st.markdown("""
 **Entry criteria (all must pass):**
 1. **Uptrend gate**: SMA_50 > SMA_200 — only buy stocks in confirmed long-term uptrend
 2. **Quality gate**: Fundamental Q-score ≥ 55 (ROE, revenue growth, EPS growth, D/E, margins, FCF yield, PEG, P/B, net margin)
 3. **Ranking**: composite = 40% Q-score + 60% momentum (avg of 1M / 3M / 6M / 12M returns)
 
-**Allocation:**
-- Equal weight across top 5 picks (configurable)
-- Minimum €200 per stock — no micro-allocations
-- Sector cap: no sector may exceed 25% of total portfolio at time of purchase
-- If fewer than 5 candidates pass → deploy to fewer stocks (or hold cash)
+**Allocation:** Equal weight across top 5 picks · Min €200/stock · Sector cap 25% of portfolio
 
-**Exit signals (checked each month before buying):**
-- **Structural breakdown**: SMA_50 < SMA_200 for ≥ 10 consecutive trading days → EXIT
-- **Quality deterioration**: Q-score drops below 35 → EXIT
-- **Concentration trim**: Position grows above 15% of portfolio → TRIM to 10%
+**Exit signals:** SMA_50 < SMA_200 for ≥10 days → EXIT · Q-score < 35 → EXIT · Position > 15% → TRIM to 10%
+            """)
 
-**What this is NOT:**
-- Not a trading strategy — no trailing stops, no daily signals
-- Not trying to time the market — deploys capital every month regardless of macro
-- Not short-term — target holding period 12–36 months per position
-        """)
+        st.subheader("Current SIP Holdings")
+        from sip_strategy import load_sip_holdings
+        _sip_state = load_sip_holdings()
+        _holdings  = _sip_state.get("holdings", {})
+        st.caption(
+            f"Total deployed: €{_sip_state.get('total_deployed', 0):,.0f}  |  "
+            f"Positions: {len(_holdings)}  |  Started: {_sip_state.get('start_date', '—')}"
+        )
+        if _holdings:
+            st.dataframe([{
+                "Ticker": _t, "Market": _h.get("market", ""), "Sector": _h.get("sector", ""),
+                "Shares": _h.get("shares", 0), "Avg Cost €": round(_h.get("avg_cost", 0), 2),
+                "Invested €": round(_h.get("total_cost_eur", 0), 2),
+                "First Bought": _h.get("first_bought", ""), "Last Added": _h.get("last_added", ""),
+            } for _t, _h in _holdings.items()], use_container_width=True)
+        else:
+            st.info("No SIP positions yet. Run the first monthly cycle above.")
 
-    # ── Holdings viewer
-    st.subheader("Current SIP Holdings")
-    from sip_strategy import load_sip_holdings
-    _sip_state = load_sip_holdings()
-    _holdings  = _sip_state.get("holdings", {})
-    st.caption(
-        f"Total deployed: €{_sip_state.get('total_deployed', 0):,.0f}  |  "
-        f"Positions: {len(_holdings)}  |  "
-        f"Started: {_sip_state.get('start_date', '—')}"
-    )
-    if _holdings:
-        _h_rows = []
-        for _t, _h in _holdings.items():
-            _h_rows.append({
-                "Ticker":       _t,
-                "Market":       _h.get("market", ""),
-                "Sector":       _h.get("sector", ""),
-                "Shares":       _h.get("shares", 0),
-                "Avg Cost €":   round(_h.get("avg_cost", 0), 2),
-                "Invested €":   round(_h.get("total_cost_eur", 0), 2),
-                "First Bought": _h.get("first_bought", ""),
-                "Last Added":   _h.get("last_added", ""),
-            })
-        st.dataframe(_h_rows, use_container_width=True)
-    else:
-        st.info("No SIP positions yet. Run the first monthly cycle above.")
+    # ══════════════════════════════════════════════════════════════════════════
+    # SUB-TAB B — SIP Backtest
+    # ══════════════════════════════════════════════════════════════════════════
+    with sip_subtab_bt:
+        st.caption(
+            "Simulate the SIP strategy over a historical period. "
+            "Uses technical gates only (SMA uptrend + momentum rank) — no historical Q-scores. "
+            "Performance measured by XIRR (annualised IRR on cash flows), not simple CAGR."
+        )
+
+        _sbt_c1, _sbt_c2, _sbt_c3, _sbt_c4 = st.columns(4)
+        with _sbt_c1:
+            _sbt_start = st.text_input("Start date", value="2016-01-01", key="sbt_start")
+        with _sbt_c2:
+            _sbt_budget = st.number_input("Monthly Budget (€)", min_value=200, max_value=50000,
+                                          value=2000, step=100, key="sbt_budget")
+        with _sbt_c3:
+            _sbt_picks = st.slider("Max picks / month", 1, 10, 5, key="sbt_picks")
+        with _sbt_c4:
+            _sbt_topn = st.number_input("Universe size / market", min_value=20, max_value=500,
+                                         value=50, step=10, key="sbt_topn")
+
+        _sbt_markets = st.multiselect("Markets", ["US", "EU", "IN"], default=["US", "EU", "IN"], key="sbt_mkts")
+
+        st.info(
+            "⏱ First run fetches 11 years of price history (~10–20 min for large universe). "
+            "Subsequent runs use the parquet cache and are much faster. "
+            "Set universe size to 50 for a quick test run."
+        )
+
+        if st.button("▶ Run SIP Backtest", key="sbt_run", type="primary"):
+            if not _sbt_markets:
+                st.error("Select at least one market.")
+            else:
+                _sbt_prog = st.progress(0, text="Building universe…")
+
+                # Universe
+                try:
+                    from universe import get_dynamic_watchlist
+                    _sbt_wl = get_dynamic_watchlist(_sbt_markets, top_n_map={m: int(_sbt_topn) for m in _sbt_markets})
+                    _sbt_tickers = [t for m in _sbt_markets for t in _sbt_wl.get(m, [])]
+                except Exception as _e:
+                    st.error(f"Universe failed: {_e}")
+                    _sbt_tickers = []
+
+                if _sbt_tickers:
+                    # Price data — 11-year history
+                    _sbt_prog.progress(5, text=f"Fetching price history for {len(_sbt_tickers)} tickers…")
+                    from data import fetch_history
+                    from indicators import calculate_all
+                    _sbt_data: dict = {}
+                    for _si, _st in enumerate(_sbt_tickers):
+                        _sbt_prog.progress(5 + int(_si / len(_sbt_tickers) * 75),
+                                           text=f"Price data {_si}/{len(_sbt_tickers)}…")
+                        try:
+                            _sdf = fetch_history(_st, years=11)
+                            if _sdf is not None and len(_sdf) >= 250:
+                                _sbt_data[_st] = calculate_all(_sdf)
+                        except Exception:
+                            pass
+
+                    # Benchmark
+                    _sbt_prog.progress(82, text="Fetching benchmark (^GSPC)…")
+                    _sbt_bench = None
+                    try:
+                        _sbt_bench = fetch_history("^GSPC", years=11)
+                    except Exception:
+                        pass
+
+                    # Run backtest
+                    _sbt_prog.progress(90, text="Simulating…")
+                    from backtest_sip import run_sip_backtest
+                    _sbt_result = run_sip_backtest(
+                        data_map=_sbt_data,
+                        benchmark_df=_sbt_bench,
+                        start=_sbt_start,
+                        monthly_budget=float(_sbt_budget),
+                        max_picks=int(_sbt_picks),
+                        markets=_sbt_markets,
+                    )
+                    _sbt_prog.progress(100, text="Done")
+                    _sbt_prog.empty()
+
+                    if "error" in _sbt_result:
+                        st.error(_sbt_result["error"])
+                    else:
+                        # ── Headline metrics
+                        _m1, _m2, _m3, _m4, _m5 = st.columns(5)
+                        _xirr_pct  = _sbt_result["xirr"] * 100
+                        _bxirr_pct = _sbt_result["benchmark_xirr"] * 100
+                        _m1.metric("Portfolio XIRR", f"{_xirr_pct:.2f}%")
+                        _m2.metric("Benchmark XIRR", f"{_bxirr_pct:.2f}%" if not (
+                            _bxirr_pct != _bxirr_pct) else "N/A")
+                        _m3.metric("Alpha vs Index",
+                                   f"{(_xirr_pct - _bxirr_pct):+.2f}%" if not (
+                                       _bxirr_pct != _bxirr_pct) else "N/A")
+                        _m4.metric("Max Drawdown", f"{_sbt_result['max_drawdown']:+.1f}%")
+                        _m5.metric("Total Gain",
+                                   f"€{_sbt_result['total_gain']:,.0f}  "
+                                   f"({_sbt_result['total_gain']/_sbt_result['total_invested']*100:+.0f}%)")
+
+                        st.caption(
+                            f"Invested: €{_sbt_result['total_invested']:,.0f}  →  "
+                            f"Final value: €{_sbt_result['final_nav']:,.0f}  |  "
+                            f"Cycles: {_sbt_result['n_cycles']}  |  "
+                            f"Avg positions: {_sbt_result['avg_positions']:.1f}"
+                        )
+
+                        # ── Combined NAV chart
+                        if _sbt_result["nav_history"]:
+                            _nav_df = pd.DataFrame(_sbt_result["nav_history"])
+                            _nav_df["date"] = pd.to_datetime(_nav_df["date"])
+                            _nav_df = _nav_df.set_index("date")
+                            st.subheader("Combined Portfolio NAV Over Time (EUR)")
+                            st.line_chart(_nav_df[["nav", "invested"]])
+
+                        # ── Regional sub-tabs
+                        _r_sym = _sbt_result.get("region_symbol", {"US": "$", "EU": "€", "IN": "₹"})
+                        _r_cur = _sbt_result.get("region_currency", {"US": "USD", "EU": "EUR", "IN": "INR"})
+                        _r_xirr = _sbt_result.get("region_xirr", {})
+                        _r_inv  = _sbt_result.get("region_invested", {})
+                        _r_fin  = _sbt_result.get("region_final", {})
+                        _r_gain = _sbt_result.get("region_gain", {})
+                        _r_nav  = _sbt_result.get("region_nav_hist", {})
+
+                        _active_mkts = _sbt_result.get("markets", _sbt_markets)
+                        _tab_labels  = []
+                        for _rm in _active_mkts:
+                            _tab_labels.append(
+                                f"{'🇺🇸' if _rm=='US' else '🇪🇺' if _rm=='EU' else '🇮🇳'} "
+                                f"{_rm} ({_r_cur.get(_rm, _rm)})"
+                            )
+                        if _tab_labels:
+                            st.subheader("Regional Breakdown")
+                            _region_tabs = st.tabs(_tab_labels)
+                            for _ri, _rm in enumerate(_active_mkts):
+                                with _region_tabs[_ri]:
+                                    _sym = _r_sym.get(_rm, "€")
+                                    _xi  = _r_xirr.get(_rm, float("nan"))
+                                    _inv = _r_inv.get(_rm, 0.0)
+                                    _fin = _r_fin.get(_rm, 0.0)
+                                    _gn  = _r_gain.get(_rm, 0.0)
+
+                                    _rc1, _rc2, _rc3, _rc4 = st.columns(4)
+                                    _rc1.metric(f"XIRR ({_rm})",
+                                                f"{_xi*100:.2f}%" if not math.isnan(_xi) else "N/A")
+                                    _rc2.metric(f"Invested",
+                                                f"{_sym}{_inv:,.0f}")
+                                    _rc3.metric(f"Final Value",
+                                                f"{_sym}{_fin:,.0f}")
+                                    _rc4.metric(f"Total Gain",
+                                                f"{_sym}{_gn:,.0f}  "
+                                                f"({_gn/_inv*100:+.0f}%)" if _inv else "—")
+
+                                    # Regional NAV chart in local currency
+                                    _rnav_list = _r_nav.get(_rm, [])
+                                    if _rnav_list:
+                                        _rnav_df = pd.DataFrame(_rnav_list)
+                                        _rnav_df["date"] = pd.to_datetime(_rnav_df["date"])
+                                        _rnav_df = _rnav_df.set_index("date")
+                                        st.caption(f"NAV in local currency ({_r_cur.get(_rm, 'EUR')})")
+                                        st.line_chart(_rnav_df[["nav", "invested"]])
+
+                        # ── Year-by-year
+                        st.subheader("Year-by-Year Returns (Modified Dietz — Combined)")
+                        if _sbt_result["year_returns"]:
+                            st.dataframe(_sbt_result["year_returns"], use_container_width=True)
+
+                        # ── Full report
+                        with st.expander("Full text report"):
+                            st.code(_sbt_result["report_text"])
+
+                        # ── Save report
+                        _sbt_rpath = (ROOT / "reports" /
+                                      f"sip-backtest-{datetime.now().strftime('%Y-%m-%d')}-"
+                                      f"{'_'.join(_sbt_markets)}.txt")
+                        _sbt_rpath.write_text(_sbt_result["report_text"], encoding="utf-8")
+                        st.caption(f"Report saved → {_sbt_rpath}")
+
+        with st.expander("ℹ Backtest Limitations"):
+            st.markdown("""
+- **Survivorship bias**: Uses current universe. Stocks that were delisted, went bankrupt, or were removed from indices are absent — real results would be lower.
+- **No historical Q-scores**: Fundamental gate (Q ≥ 55) is omitted. The backtest uses technical momentum ranking only. Live trading with Q-score filter may perform differently.
+- **Index-drift**: Current S&P 500 / DAX / FTSE constituents are used throughout. A live strategy tracks constituent changes monthly.
+- **XIRR vs CAGR**: XIRR measures the annualised return on each euro of capital from the date it was deployed. It is the correct metric for SIP evaluation. Standard CAGR applied to total invested would overstate performance.
+            """)
 
 
 # ══════════════════════════════════════════════════════════════════════════════

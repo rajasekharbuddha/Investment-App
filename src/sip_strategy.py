@@ -36,18 +36,25 @@ ROOT = Path(__file__).parent.parent
 SIP_HOLDINGS_FILE = ROOT / "portfolio" / "sip_holdings.json"
 
 SIP_CONFIG: dict = {
-    "monthly_budget":     2000.0,    # EUR
-    "markets":            ["US", "EU"],
-    "min_q_entry":        55.0,      # Q-score gate (0-100) to enter a position
-    "min_q_exit":         35.0,      # Q-score below this -> exit flag
-    "max_picks":          5,         # max stocks per monthly deployment
+    "monthly_budget":     2000.0,              # EUR total per month
+    "markets":            ["US", "EU", "IN"],
+    # Regional budget split (must sum to 1.0); IN budget is in EUR-equivalent
+    "region_alloc":       {"US": 0.40, "EU": 0.30, "IN": 0.30},
+    # Max picks per region per month (None = uncapped within budget)
+    "picks_per_region":   {"US": 2, "EU": 2, "IN": 2},
+    # Local currencies for display
+    "region_currency":    {"US": "USD", "EU": "EUR", "IN": "INR"},
+    "region_symbol":      {"US": "$",   "EU": "€",   "IN": "₹"},
+    "min_q_entry":        55.0,
+    "min_q_exit":         35.0,
+    "max_picks":          5,         # fallback when region_alloc not used
     "min_alloc":          200.0,     # minimum EUR per position
-    "sector_cap":         0.25,      # max sector weight in total portfolio
-    "max_position_pct":   0.15,      # trim threshold (15% of portfolio)
-    "trim_to_pct":        0.10,      # trim down to this level (10%)
-    "sma_breakdown_days": 10,        # consecutive days SMA_50 < SMA_200 before exit
-    "q_weight":           0.40,      # composite score: Q-score contribution
-    "mom_weight":         0.60,      # composite score: momentum contribution
+    "sector_cap":         0.25,
+    "max_position_pct":   0.15,
+    "trim_to_pct":        0.10,
+    "sma_breakdown_days": 10,
+    "q_weight":           0.40,
+    "mom_weight":         0.60,
     "momentum_periods":   [21, 63, 126, 252],  # 1M / 3M / 6M / 12M
 }
 

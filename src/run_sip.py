@@ -30,7 +30,7 @@ ROOT = Path(__file__).parent.parent
 def main() -> None:
     parser = argparse.ArgumentParser(description="Monthly SIP runner — US + EU equity accumulation")
     parser.add_argument("--budget",        type=float, default=2000.0, help="Monthly budget in EUR (default: 2000)")
-    parser.add_argument("--markets",       default="US,EU",            help="Comma-separated markets (default: US,EU)")
+    parser.add_argument("--markets",       default="US,EU,IN",         help="Comma-separated markets (default: US,EU,IN)")
     parser.add_argument("--min-q",         type=float, default=55.0,   help="Minimum Q-score for entry (default: 55)")
     parser.add_argument("--top-n",         type=int,   default=200,    help="Universe size per market (default: 200)")
     parser.add_argument("--dry-run",       action="store_true",        help="Preview allocation without saving state")
@@ -110,7 +110,7 @@ def main() -> None:
         ts = datetime.now().strftime("%Y-%m-%d")
         path = reports_dir / f"sip-{ts}.txt"
         path.write_text(result["report_text"], encoding="utf-8")
-        print(f"  Report saved → {path}\n")
+        print(f"  Report saved: {path}\n")
     else:
         print("  [Dry run] No state saved.\n")
 
