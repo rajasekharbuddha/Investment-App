@@ -26,6 +26,10 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# Ensure UTF-8 output on Windows (needed for ₹, €, etc.)
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+
 ROOT = Path(__file__).parent.parent
 YEARS_HISTORY = 11   # covers 2016-2026 plus SMA-200 warmup
 
