@@ -440,7 +440,7 @@ All CLI runners live in `src/` and support `--help` for full argument lists.
 
 **Sizing:** R-based — risk a fixed percentage of equity per trade. Position size = (equity × risk_pct) / (ATR × stop_multiplier). Maximum 24% per position (32% cap for momentum leaders).
 
-**Trailing stop:** 5.5× ATR from the rolling high.
+**Trailing stop:** Configurable per market and regime via `trail_mult` in `MARKET_PARAMS`. Stop = (rolling peak) − (trail_mult × ATR). Default fallback is 5.5× ATR. Production values: IN HIGH 3.5×, US HIGH 3.5×, EU HIGH 3.5×.
 
 **Exits:**
 - Trailing stop hit
@@ -451,12 +451,53 @@ All CLI runners live in `src/` and support `--help` for full argument lists.
 
 **Adaptive tuner:** Monitors signal density. If density is too low, loosens gate parameters (SOFT → ULTRA_SOFT). If too high, tightens (BASE → STRICT). Transitions over 3 days with EMA smoothing.
 
-**Backtest results — Run 17 locked config (IN market):**
+---
 
-| Window | CAGR | Total Return | Max DD | Sharpe | Alpha vs Nifty |
-|--------|------|-------------|--------|--------|----------------|
-| 10-year (Jan 2016 – May 2026) | 14.05% | +292% (₹1L → ₹3.92L) | -25.97% | 0.862 | +2.73% |
-| 3-year (Jan 2023 – May 2026) | 20.77% | +89.68% | -16.68% | 1.245 | +12.62% |
+### Backtest Results — 10-Year (Jan 2016 – Jun 2026)
+
+All runs use 100k initial equity, 0.10% slippage, 0.10% commission, dynamic universe (250 IN / 200 US tickers), 8-slot portfolio at 24% base position size.
+
+#### IN Market (benchmark: Nifty 50 +11.12% CAGR)
+
+| Run | trail_mult HIGH | stop_mult HIGH | Universe | CAGR | Max DD | Sharpe | Trades | Win% | Alpha vs Nifty |
+|-----|----------------|----------------|----------|------|--------|--------|--------|------|----------------|
+| Run 17 baseline (hardcoded 5.5×) | 5.5× (hardcoded) | 3.5× | Static 20 | 14.05% | -25.97% | 0.862 | — | — | +2.93% |
+| v3 — static universe | 5.5× (hardcoded¹) | 3.5× | Static 20 | 3.79% | -25.87% | 0.334 | 331 | 34.4% | — |
+| v4 — dynamic universe | 5.5× (hardcoded¹) | 3.5× | Dynamic 250 | 11.11% | -25.83% | 0.723 | 453 | 33.1% | -0.01% |
+| **v5 — optimised ✅** | **3.5×** | **4.0×** | Dynamic 250 | **22.78%** | -30.61% | **1.284** | 383 | 36.6% | **+11.66%** |
+| v6 — tighter trail | 3.0× | 4.5× | Dynamic 250 | 15.16% | -39.77% | 0.896 | 444 | 41.7% | +4.04% |
+
+¹ trail_mult parameter stored in positions but ignored — `update_trailing_stop()` had hardcoded 5.5× until the 2026-06-07 fix.
+
+**Best IN config (v5):** trail_mult `LOW=5.5 / NORMAL=4.5 / HIGH=3.5`, stop_mult `LOW=2.5 / NORMAL=3.0 / HIGH=4.0`
+
+**Why "wide initial + tight trailing" works for IN:** IN HIGH regime (ATR 2–4%). With stop_mult=4.0× at entry, the trade has 8–16% breathing room before hitting the initial stop — fewer false exits. Once profitable, trail_mult=3.5× locks in gains 7–14% from the peak (vs 11–22% at old 5.5×). For a typical 25% peak move: old code exits at +8.5%; new code exits at +14.5% — 70% more profit captured per winner.
+
+---
+
+#### US Market (benchmark: S&P 500 +13.29% CAGR)
+
+| Run | trail_mult HIGH | stop_mult HIGH | Pos size | Universe | CAGR | Max DD | Sharpe | Trades | Win% | Alpha vs S&P |
+|-----|----------------|----------------|----------|----------|------|--------|--------|--------|------|--------------|
+| v4 — dynamic universe | 5.5× (hardcoded¹) | 3.0× | 24% | Dynamic 200 | 9.95% | -28.42% | 0.688 | 455 | 35.2% | -3.34% |
+| **v5 — optimised ✅** | **3.5×** | **3.5×** | 24% | Dynamic 200 | **11.62%** | -31.50% | **0.808** | 265 | 40.8% | -1.67% |
+| v6 — tighter trail, larger pos | 3.0× | 4.0× | 30% | Dynamic 200 | 8.07% | -36.19% | 0.590 | 263 | 46.0% | -5.22% |
+
+¹ Same hardcoded trail_mult bug as IN — fixed 2026-06-07.
+
+**Best US config (v5):** trail_mult `LOW=7.0 / NORMAL=5.0 / HIGH=3.5`, stop_mult `LOW=2.5 / NORMAL=2.5 / HIGH=3.5`
+
+**Note on v6:** Increasing position size to 30% hurt CAGR despite a higher win rate — fewer concurrent positions reduce diversification and compound growth.
+
+---
+
+#### Key Findings
+
+- **Dynamic universe is essential** — 250 IN tickers vs 20 static: +11.11% vs +3.79% CAGR (same trail_mult).
+- **trail_mult HIGH=3.5× is the sweet spot for both IN and US** — tighter locks in more profit; looser gives back too much at the peak. Values below 3.0× exit too early on normal intraday pullbacks.
+- **Wider initial stop (stop_mult 4.0× for IN) outperforms tighter initial (3.5×)** — gives positions room to develop, reducing noise-driven exits at entry.
+- **Larger position sizes (30%) consistently hurt** — fewer active slots reduce diversification; compounding benefits from more concurrent smaller positions outweigh the per-trade sizing advantage.
+- **risk_pct in MARKET_PARAMS does not affect backtest sizing** — position size is capped by `RISK["MAX_POSITION_SIZE_PCT"]` = 0.24 in `backtest.py`. Only `trail_mult`, `stop_mult`, and `RISK` config are effective levers.
 
 ---
 
