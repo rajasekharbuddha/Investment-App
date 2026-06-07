@@ -36,19 +36,20 @@ ROOT = Path(__file__).parent.parent
 SIP_HOLDINGS_FILE = ROOT / "portfolio" / "sip_holdings.json"
 
 SIP_CONFIG: dict = {
-    "monthly_budget":     2000.0,              # EUR total per month
     "markets":            ["US", "EU", "IN"],
-    # Regional budget split (must sum to 1.0); IN budget is in EUR-equivalent
-    "region_alloc":       {"US": 0.40, "EU": 0.30, "IN": 0.30},
-    # Max picks per region per month (None = uncapped within budget)
+    # Monthly budget per region in LOCAL CURRENCY (USD / EUR / INR)
+    "region_budget":      {"US": 2000.0, "EU": 2000.0, "IN": 20000.0},
+    # Max picks per region per month
     "picks_per_region":   {"US": 2, "EU": 2, "IN": 2},
     # Local currencies for display
     "region_currency":    {"US": "USD", "EU": "EUR", "IN": "INR"},
     "region_symbol":      {"US": "$",   "EU": "€",   "IN": "₹"},
+    # Min position size per region in local currency
+    "region_min_alloc":   {"US": 200.0, "EU": 200.0, "IN": 2000.0},
     "min_q_entry":        55.0,
     "min_q_exit":         35.0,
-    "max_picks":          5,         # fallback when region_alloc not used
-    "min_alloc":          200.0,     # minimum EUR per position
+    "max_picks":          5,         # fallback
+    "min_alloc":          200.0,     # fallback minimum per position
     "sector_cap":         0.25,
     "max_position_pct":   0.15,
     "trim_to_pct":        0.10,

@@ -38,7 +38,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="SIP strategy historical backtest")
     parser.add_argument("--start",      default="2016-01-01", help="Backtest start date (YYYY-MM-DD)")
     parser.add_argument("--end",        default=None,          help="Backtest end date (YYYY-MM-DD); default: today")
-    parser.add_argument("--budget",     type=float, default=2000.0,  help="Monthly budget EUR (default: 2000)")
+    parser.add_argument("--budget-us",  type=float, default=2000.0,  help="US monthly budget in USD (default: 2000)")
+    parser.add_argument("--budget-eu",  type=float, default=2000.0,  help="EU monthly budget in EUR (default: 2000)")
+    parser.add_argument("--budget-in",  type=float, default=20000.0, help="IN monthly budget in INR (default: 20000)")
     parser.add_argument("--markets",    default="US,EU,IN",    help="Comma-separated markets (default: US,EU,IN)")
     parser.add_argument("--max-picks",  type=int,   default=5,       help="Max stocks per month (default: 5)")
     parser.add_argument("--top-n",      type=int,   default=100,     help="Universe size per market (default: 100)")
@@ -47,11 +49,12 @@ def main() -> None:
     args = parser.parse_args()
 
     markets = [m.strip().upper() for m in args.markets.split(",")]
+    region_budget = {"US": args.budget_us, "EU": args.budget_eu, "IN": args.budget_in}
 
     print(f"\n{'='*60}")
     print(f"  SIP Backtest -- {args.start} to {args.end or 'today'}")
     print(f"  Markets : {', '.join(markets)}")
-    print(f"  Budget  : €{args.budget:,.0f}/month  |  Max picks: {args.max_picks}")
+    print(f"  Budgets : US ${args.budget_us:,.0f}  EU EUR{args.budget_eu:,.0f}  IN Rs{args.budget_in:,.0f}  |  Max picks: {args.max_picks}")
     print(f"{'='*60}")
 
     # ── 1. Universe ──────────────────────────────────────────────────────────
@@ -95,27 +98,32 @@ def main() -> None:
             failed += 1
     print(f"      {len(data_map)} tickers ready ({failed} failed)          ")
 
-    # ── 3. Benchmark (S&P 500) ───────────────────────────────────────────────
-    print("\n[3/4] Fetching benchmark...")
-    benchmark_df = None
-    try:
-        benchmark_df = fetch_history("^GSPC", years=YEARS_HISTORY)
-        if benchmark_df is not None:
-            print(f"      ^GSPC loaded ({len(benchmark_df)} days)")
-        else:
-            print("      ^GSPC unavailable — benchmark comparison skipped")
-    except Exception as e:
-        print(f"      Benchmark fetch failed: {e}")
+    # ── 3. Per-region benchmarks ─────────────────────────────────────────────
+    print("\n[3/4] Fetching per-region benchmarks...")
+    _BENCH_TICKERS = {"US": "^GSPC", "EU": "^STOXX50E", "IN": "^NSEI"}
+    benchmark_dfs: dict = {}
+    for mkt, bticker in _BENCH_TICKERS.items():
+        if mkt not in markets:
+            continue
+        try:
+            bdf = fetch_history(bticker, years=YEARS_HISTORY)
+            if bdf is not None:
+                benchmark_dfs[mkt] = bdf
+                print(f"      {bticker} ({mkt}) loaded — {len(bdf)} days")
+            else:
+                print(f"      {bticker} ({mkt}) unavailable — benchmark skipped for {mkt}")
+        except Exception as e:
+            print(f"      {bticker} ({mkt}) failed: {e}")
 
     # ── 4. Run backtest ──────────────────────────────────────────────────────
     print("\n[4/4] Running SIP backtest simulation...")
     from backtest_sip import run_sip_backtest
     result = run_sip_backtest(
         data_map=data_map,
-        benchmark_df=benchmark_df,
+        benchmark_dfs=benchmark_dfs,
         start=args.start,
         end=args.end,
-        monthly_budget=args.budget,
+        region_budget=region_budget,
         max_picks=args.max_picks,
         commission=args.commission,
         slippage=args.slippage,
@@ -132,7 +140,7 @@ def main() -> None:
     reports_dir = ROOT / "reports"
     reports_dir.mkdir(exist_ok=True)
     ts   = datetime.now().strftime("%Y-%m-%d")
-    name = f"sip-backtest-{ts}-{'_'.join(markets)}_budget{int(args.budget)}.txt"
+    name = f"sip-backtest-{ts}-{'_'.join(markets)}.txt"
     path = reports_dir / name
     path.write_text(result["report_text"], encoding="utf-8")
     print(f"  Report saved → {path}\n")

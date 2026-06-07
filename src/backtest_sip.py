@@ -35,7 +35,7 @@ import numpy as np
 import pandas as pd
 
 
-BENCHMARK_TICKER = {"US": "^GSPC", "EU": "^STOXX50E", "US+EU": "^GSPC"}
+BENCHMARK_TICKER = {"US": "^GSPC", "EU": "^STOXX50E", "IN": "^NSEI"}
 _DEFAULT_PERIODS  = [21, 63, 126, 252]   # 1M / 3M / 6M / 12M
 
 
@@ -167,50 +167,44 @@ def _select_picks(
 # ── Core backtest ─────────────────────────────────────────────────────────────
 
 def run_sip_backtest(
-    data_map:          dict,
-    benchmark_df:      Optional[pd.DataFrame],
-    start:             str            = "2016-01-01",
-    end:               Optional[str]  = None,
-    monthly_budget:    float          = 2000.0,
-    max_picks:         int            = 5,
-    min_alloc:         float          = 200.0,
-    commission:        float          = 0.001,
-    slippage:          float          = 0.001,
-    sma_breakdown_days: int           = 10,
-    momentum_periods:  Optional[list] = None,
-    markets:           Optional[list] = None,
+    data_map:           dict,
+    benchmark_dfs:      dict | None      = None,   # {mkt: DataFrame} per-region benchmarks
+    benchmark_df:       Optional[pd.DataFrame] = None,  # legacy — used as US fallback
+    start:              str              = "2016-01-01",
+    end:                Optional[str]    = None,
+    monthly_budget:     float            = 2000.0,  # fallback if region_budget not given
+    region_budget:      dict | None      = None,    # {"US": 2000, "EU": 2000, "IN": 20000} local currency
+    region_min_alloc:   dict | None      = None,    # {"US": 200, "EU": 200, "IN": 2000}
+    max_picks:          int              = 5,
+    commission:         float            = 0.001,
+    slippage:           float            = 0.001,
+    sma_breakdown_days: int              = 10,
+    momentum_periods:   Optional[list]   = None,
+    markets:            Optional[list]   = None,
 ) -> dict:
     """
     Simulate the monthly SIP strategy over a historical period.
 
-    Parameters
-    ----------
-    data_map          : {ticker: DataFrame} with SMA_50, SMA_200, Close computed
-    benchmark_df      : price DataFrame for benchmark (e.g. ^GSPC); None skips benchmark
-    start / end       : "YYYY-MM-DD" period bounds
-    monthly_budget    : EUR deployed each month
-    max_picks         : max stocks to buy per month
-    min_alloc         : min EUR per position (fewer picks if budget/picks < min_alloc)
-    commission/slippage: one-way cost each
-    sma_breakdown_days: consecutive days SMA_50 < SMA_200 before forced exit
-    momentum_periods  : lookback periods for momentum score
-    markets           : filter data_map to these markets; None = all
-
-    Returns dict with: xirr, benchmark_xirr, total_invested, final_nav,
-                       total_gain, max_drawdown, nav_history, year_returns,
-                       all_trades, report_text
+    Each region runs with its own local-currency budget (USD / EUR / INR).
+    XIRR, invested, final NAV, and gain are all reported in local currency per region.
     """
-    periods       = momentum_periods or _DEFAULT_PERIODS
-    cost          = commission + slippage
-    active_mkts   = [m.upper() for m in (markets or ["US", "EU", "IN"])]
+    periods     = momentum_periods or _DEFAULT_PERIODS
+    cost        = commission + slippage
+    active_mkts = [m.upper() for m in (markets or ["US", "EU", "IN"])]
 
-    # Regional budget split — default equal weight across active markets
-    n_mkts        = len(active_mkts)
-    region_budget = {m: monthly_budget / n_mkts for m in active_mkts}
-
-    # Currency display per region
     _CURRENCY = {"US": "USD", "EU": "EUR", "IN": "INR"}
     _SYMBOL   = {"US": "$",   "EU": "€",   "IN": "₹"}
+
+    # Regional budgets in local currency
+    _DEFAULT_RB  = {"US": 2000.0, "EU": 2000.0, "IN": 20000.0}
+    _DEFAULT_RMA = {"US": 200.0,  "EU": 200.0,  "IN": 2000.0}
+    rb  = {m: (region_budget  or _DEFAULT_RB ).get(m, monthly_budget) for m in active_mkts}
+    rma = {m: (region_min_alloc or _DEFAULT_RMA).get(m, 200.0)        for m in active_mkts}
+
+    # Build per-region benchmark map
+    _bench_map: dict[str, pd.DataFrame] = dict(benchmark_dfs or {})
+    if benchmark_df is not None and "US" not in _bench_map:
+        _bench_map["US"] = benchmark_df
 
     # ── Date range ────────────────────────────────────────────────────────────
     start_dt = pd.Timestamp(start)
@@ -223,7 +217,6 @@ def run_sip_backtest(
     if len(trading_days) < 63:
         return {"error": "Insufficient historical data for backtest period"}
 
-    # Tickers grouped by market
     tickers_by_mkt: dict[str, list[str]] = {m: [] for m in active_mkts}
     for t, df in data_map.items():
         m = _get_market(t)
@@ -232,44 +225,43 @@ def run_sip_backtest(
 
     monthly_dates = trading_days[::21]
 
-    # ── Per-region state ──────────────────────────────────────────────────────
-    region_portfolio: dict[str, dict] = {m: {} for m in active_mkts}
+    # ── Per-region state (all values in local currency) ───────────────────────
+    region_portfolio: dict[str, dict]  = {m: {} for m in active_mkts}
     region_cash:      dict[str, float] = {m: 0.0 for m in active_mkts}
     region_invested:  dict[str, float] = {m: 0.0 for m in active_mkts}
     region_cfs:       dict[str, list]  = {m: [] for m in active_mkts}
     region_nav_hist:  dict[str, list]  = {m: [] for m in active_mkts}
 
-    total_invested  = 0.0
-    cash_flows:    list[tuple[float, date]] = []
-    nav_history:   list[dict]  = []
-    all_trades:    list[dict]  = []
+    # Per-region benchmark tracking
+    bench_shares: dict[str, float] = {m: 0.0 for m in active_mkts}
+    bench_cfs:    dict[str, list]  = {m: [] for m in active_mkts}
 
-    bench_shares = 0.0
-    bench_cfs:   list[tuple[float, date]] = []
+    all_trades:  list[dict] = []
+    nav_history: list[dict] = []   # combined — nav is sum of local-currency navs (mixed, indicative only)
 
     for cycle_date in monthly_dates:
-        py_date = cycle_date.date()
+        py_date   = cycle_date.date()
         cycle_nav = 0.0
 
         for mkt in active_mkts:
-            bgt = region_budget[mkt]
-            region_cash[mkt]    += bgt
-            region_invested[mkt]+= bgt
-            total_invested       += bgt
+            bgt = rb[mkt]
+            region_cash[mkt]     += bgt
+            region_invested[mkt] += bgt
             region_cfs[mkt].append((-bgt, py_date))
-            cash_flows.append((-bgt, py_date))
 
-        # Benchmark: buy S&P 500 with full monthly_budget
-        if benchmark_df is not None:
-            bp = _price_at(benchmark_df, cycle_date, offset=cost)
-            if bp and bp > 0:
-                bench_shares += monthly_budget / bp
-                bench_cfs.append((-monthly_budget, py_date))
+            # Per-region benchmark: deploy same local-currency budget
+            bdf = _bench_map.get(mkt)
+            if bdf is not None:
+                bp = _price_at(bdf, cycle_date, offset=cost)
+                if bp and bp > 0:
+                    bench_shares[mkt] += bgt / bp
+                    bench_cfs[mkt].append((-bgt, py_date))
 
         for mkt in active_mkts:
-            port   = region_portfolio[mkt]
+            port    = region_portfolio[mkt]
             tickers = tickers_by_mkt[mkt]
-            bgt    = region_budget[mkt]
+            bgt     = rb[mkt]
+            _rma    = rma[mkt]
 
             # ── Exits
             for ticker in list(port.keys()):
@@ -280,26 +272,25 @@ def run_sip_backtest(
                 if _breakdown_days(sub) >= sma_breakdown_days:
                     sell_px = _price_at(sub, cycle_date, offset=-cost)
                     if sell_px and sell_px > 0:
-                        proceeds = port[ticker]["shares"] * sell_px
-                        region_cash[mkt] += proceeds
+                        region_cash[mkt] += port[ticker]["shares"] * sell_px
                         all_trades.append({
                             "date": str(py_date), "action": "SELL",
                             "ticker": ticker, "market": mkt,
                             "shares": round(port[ticker]["shares"], 4),
-                            "price": round(sell_px, 4),
-                            "local_currency": _CURRENCY[mkt],
+                            "price":  round(sell_px, 4),
+                            "currency": _CURRENCY[mkt],
                         })
                     del port[ticker]
 
-            # ── Select picks for this region
+            # ── Select picks
             picks = _select_picks(data_map, tickers, cycle_date, max_picks,
                                   sma_breakdown_days, port, periods)
 
-            # ── Allocate: deploy regional_budget (not all accumulated cash)
+            # ── Deploy this month's budget (not accumulated cash)
             deploy = min(bgt, region_cash[mkt])
-            if picks and deploy >= min_alloc:
-                n = min(len(picks), max(1, int(deploy / min_alloc)))
-                picks = picks[:n]
+            if picks and deploy >= _rma:
+                n = min(len(picks), max(1, int(deploy / _rma)))
+                picks     = picks[:n]
                 alloc_per = deploy / len(picks)
 
                 for ticker in picks:
@@ -324,12 +315,12 @@ def run_sip_backtest(
                         "date": str(py_date), "action": "BUY",
                         "ticker": ticker, "market": mkt,
                         "shares": round(shares, 4),
-                        "price": round(buy_px, 4),
-                        "local_currency": _CURRENCY[mkt],
-                        "amount_eur": round(alloc_per, 2),
+                        "price":  round(buy_px, 4),
+                        "currency": _CURRENCY[mkt],
+                        "amount": round(alloc_per, 2),
                     })
 
-            # ── Regional NAV (in local currency terms)
+            # ── Regional NAV in local currency
             region_nav = region_cash[mkt]
             for ticker, pos in port.items():
                 df  = data_map.get(ticker)
@@ -351,18 +342,17 @@ def run_sip_backtest(
         nav_history.append({
             "date":      str(py_date),
             "nav":       round(cycle_nav, 2),
-            "invested":  round(total_invested, 2),
+            "invested":  round(sum(region_invested.values()), 2),
             "positions": sum(len(region_portfolio[m]) for m in active_mkts),
         })
 
     # ── Final liquidation ─────────────────────────────────────────────────────
     final_date = end_dt.date()
-    final_nav  = 0.0
     region_final: dict[str, float] = {}
     region_gain:  dict[str, float] = {}
 
     for mkt in active_mkts:
-        port = region_portfolio[mkt]
+        port  = region_portfolio[mkt]
         r_nav = region_cash[mkt]
         for ticker, pos in port.items():
             df  = data_map.get(ticker)
@@ -371,72 +361,71 @@ def run_sip_backtest(
                 r_nav += pos["shares"] * float(sub.iloc[-1]["Close"])
         region_final[mkt] = round(r_nav, 2)
         region_gain[mkt]  = round(r_nav - region_invested[mkt], 2)
-        final_nav         += r_nav
         region_cfs[mkt].append((r_nav, final_date))
-        cash_flows.append((r_nav, final_date))
 
-    # Benchmark
-    bench_final = 0.0
-    if benchmark_df is not None and bench_cfs:
-        bsub = benchmark_df.loc[:end_dt]
-        if not bsub.empty:
-            bench_final = bench_shares * float(bsub.iloc[-1]["Close"])
-            bench_cfs.append((bench_final, final_date))
+    # Per-region benchmark final NAV
+    region_benchmark_xirr: dict[str, float] = {}
+    for mkt in active_mkts:
+        bdf = _bench_map.get(mkt)
+        if bdf is not None and bench_cfs[mkt]:
+            bsub = bdf.loc[:end_dt]
+            if not bsub.empty:
+                bench_fin = bench_shares[mkt] * float(bsub.iloc[-1]["Close"])
+                bench_cfs[mkt].append((bench_fin, final_date))
+                region_benchmark_xirr[mkt] = _xirr(bench_cfs[mkt])
+            else:
+                region_benchmark_xirr[mkt] = float("nan")
+        else:
+            region_benchmark_xirr[mkt] = float("nan")
 
     # ── Metrics ───────────────────────────────────────────────────────────────
-    xirr_val    = _xirr(cash_flows)
-    bench_xirr  = _xirr(bench_cfs) if bench_cfs else float("nan")
     region_xirr = {m: _xirr(region_cfs[m]) for m in active_mkts}
     nav_vals    = [h["nav"] for h in nav_history]
     max_dd      = _max_drawdown(nav_vals)
-    total_gain  = final_nav - total_invested
     avg_pos     = float(np.mean([h["positions"] for h in nav_history])) if nav_history else 0.0
-    year_returns = _year_returns(nav_history, monthly_budget)
+
+    # Per-region year-by-year returns
+    region_year_returns = {
+        m: _year_returns(region_nav_hist[m], rb[m]) for m in active_mkts
+    }
 
     report = _format_report(
         start=start, end=str(end_dt.date()),
         markets=active_mkts,
-        monthly_budget=monthly_budget,
-        total_invested=total_invested,
-        final_nav=final_nav,
-        total_gain=total_gain,
-        xirr=xirr_val,
-        benchmark_xirr=bench_xirr,
+        region_budget=rb,
         max_dd=max_dd,
         n_cycles=len(monthly_dates),
         avg_positions=avg_pos,
-        year_returns=year_returns,
         n_tickers=sum(len(v) for v in tickers_by_mkt.values()),
         n_trades=len(all_trades),
         region_invested=region_invested,
         region_final=region_final,
         region_gain=region_gain,
         region_xirr=region_xirr,
+        region_benchmark_xirr=region_benchmark_xirr,
         region_symbol=_SYMBOL,
         region_currency=_CURRENCY,
+        region_year_returns=region_year_returns,
     )
 
     return {
-        "xirr":            xirr_val,
-        "benchmark_xirr":  bench_xirr,
-        "region_xirr":     region_xirr,
-        "region_invested": region_invested,
-        "region_final":    region_final,
-        "region_gain":     region_gain,
-        "total_invested":  round(total_invested, 2),
-        "final_nav":       round(final_nav, 2),
-        "total_gain":      round(total_gain, 2),
-        "max_drawdown":    round(max_dd * 100, 2),
-        "n_cycles":        len(monthly_dates),
-        "avg_positions":   round(avg_pos, 1),
-        "nav_history":     nav_history,
-        "region_nav_hist": region_nav_hist,
-        "year_returns":    year_returns,
-        "all_trades":      all_trades,
-        "report_text":     report,
-        "markets":         active_mkts,
-        "region_currency": _CURRENCY,
-        "region_symbol":   _SYMBOL,
+        "region_xirr":           region_xirr,
+        "region_benchmark_xirr": region_benchmark_xirr,
+        "region_invested":       region_invested,
+        "region_final":          region_final,
+        "region_gain":           region_gain,
+        "region_budget":         rb,
+        "max_drawdown":          round(max_dd * 100, 2),
+        "n_cycles":              len(monthly_dates),
+        "avg_positions":         round(avg_pos, 1),
+        "nav_history":           nav_history,
+        "region_nav_hist":       region_nav_hist,
+        "region_year_returns":   region_year_returns,
+        "all_trades":            all_trades,
+        "report_text":           report,
+        "markets":               active_mkts,
+        "region_currency":       _CURRENCY,
+        "region_symbol":         _SYMBOL,
     }
 
 
@@ -483,85 +472,84 @@ def _year_returns(nav_history: list[dict], monthly_budget: float) -> list[dict]:
 
 def _format_report(
     start: str, end: str, markets: list,
-    monthly_budget: float, total_invested: float,
-    final_nav: float, total_gain: float,
-    xirr: float, benchmark_xirr: float,
+    region_budget: dict,
     max_dd: float, n_cycles: int, avg_positions: float,
-    year_returns: list, n_tickers: int, n_trades: int,
-    region_invested: dict | None = None,
-    region_final: dict | None = None,
-    region_gain: dict | None = None,
-    region_xirr: dict | None = None,
-    region_symbol: dict | None = None,
-    region_currency: dict | None = None,
+    n_tickers: int, n_trades: int,
+    region_invested: dict,
+    region_final: dict,
+    region_gain: dict,
+    region_xirr: dict,
+    region_benchmark_xirr: dict,
+    region_symbol: dict,
+    region_currency: dict,
+    region_year_returns: dict,
 ) -> str:
     sep  = "=" * 68
     dash = "-" * 44
     pct  = lambda v: f"{v*100:+.2f}%" if not math.isnan(v) else "N/A"
 
-    _sym = region_symbol or {}
-    _cur = region_currency or {}
-
+    budget_str = "  |  ".join(
+        f"{region_symbol.get(m,'')}{region_budget.get(m,0):,.0f}/mo {region_currency.get(m,'')}"
+        for m in markets
+    )
     lines = [
         "",
         sep,
         "  MASTERMIND PRO — SIP BACKTEST",
         f"  Markets  : {', '.join(markets)}  |  Universe: {n_tickers} tickers",
         f"  Period   : {start}  to  {end}",
-        f"  Budget   : €{monthly_budget:,.0f}/month  |  Cycles: {n_cycles}",
+        f"  Budget   : {budget_str}",
+        f"  Cycles   : {n_cycles}  |  Max DD: {max_dd*100:+.2f}%  |  Avg positions: {avg_positions:.1f}",
         sep,
         "",
-        "  PERFORMANCE SUMMARY (Combined)",
+        "  REGIONAL PERFORMANCE SUMMARY",
         "  " + dash,
-        f"  Total invested         €{total_invested:>12,.0f}",
-        f"  Final portfolio value  €{final_nav:>12,.0f}",
-        f"  Total gain             €{total_gain:>12,.0f}  ({total_gain/total_invested*100:+.1f}%)",
-        f"  XIRR (annualised IRR)  {pct(xirr):>13}",
-        f"  Benchmark XIRR (index) {pct(benchmark_xirr):>13}",
-        f"  Alpha vs benchmark     {pct(xirr - benchmark_xirr) if not math.isnan(benchmark_xirr) else 'N/A':>13}",
-        f"  Max drawdown (NAV)     {max_dd*100:>+12.2f}%",
-        f"  Avg open positions     {avg_positions:>12.1f}",
-        f"  Total trades           {n_trades:>12}",
+        f"  {'Mkt':<4} {'Currency':<6} {'Budget/mo':>10} {'Invested':>12} "
+        f"{'Final NAV':>12} {'Gain':>10} {'XIRR':>8} {'Bench XIRR':>11} {'Alpha':>8}",
     ]
 
-    # ── Regional breakdown
-    if region_xirr and region_invested and region_final and region_gain:
+    for m in markets:
+        sym  = region_symbol.get(m, "")
+        cur  = region_currency.get(m, "")
+        bgt  = region_budget.get(m, 0.0)
+        inv  = region_invested.get(m, 0.0)
+        fin  = region_final.get(m, 0.0)
+        gn   = region_gain.get(m, 0.0)
+        xi   = region_xirr.get(m, float("nan"))
+        bxi  = region_benchmark_xirr.get(m, float("nan"))
+        alpha = xi - bxi if not math.isnan(xi) and not math.isnan(bxi) else float("nan")
+        lines.append(
+            f"  {m:<4} {cur:<6} "
+            f"{sym}{bgt:>8,.0f}  "
+            f"{sym}{inv:>10,.0f}  "
+            f"{sym}{fin:>10,.0f}  "
+            f"{sym}{gn:>8,.0f}  "
+            f"{pct(xi):>8}  "
+            f"{pct(bxi):>11}  "
+            f"{pct(alpha):>8}"
+        )
+
+    # ── Per-region year-by-year
+    for m in markets:
+        sym  = region_symbol.get(m, "")
+        cur  = region_currency.get(m, "")
+        yr_rows = region_year_returns.get(m, [])
+        if not yr_rows:
+            continue
         lines += [
             "",
-            "  REGIONAL BREAKDOWN",
+            f"  YEAR-BY-YEAR RETURNS — {m} ({cur}, Modified Dietz)",
             "  " + dash,
-            f"  {'Market':<6} {'Currency':<8} {'Invested':>14} {'Final Value':>14} {'Gain':>12} {'XIRR':>9}",
+            f"  {'Year':<6} {'NAV Start':>14} {'Contrib':>12} {'NAV End':>14} {'Return':>8}",
         ]
-        for m in markets:
-            sym = _sym.get(m, "€")
-            cur = _cur.get(m, "EUR")
-            inv = region_invested.get(m, 0.0)
-            fin = region_final.get(m, 0.0)
-            gn  = region_gain.get(m, 0.0)
-            xi  = region_xirr.get(m, float("nan"))
+        for r in yr_rows:
             lines.append(
-                f"  {m:<6} {cur:<8} "
-                f"{sym}{inv:>12,.0f} "
-                f"{sym}{fin:>12,.0f} "
-                f"{sym}{gn:>10,.0f} "
-                f"{pct(xi):>9}"
+                f"  {r['year']:<6} "
+                f"{sym}{r['nav_start']:>12,.0f}  "
+                f"{sym}{r['contributions']:>10,.0f}  "
+                f"{sym}{r['nav_end']:>12,.0f}  "
+                f"{r['return_pct']:>+7.1f}%"
             )
-
-    lines += [
-        "",
-        "  YEAR-BY-YEAR RETURNS  (Modified Dietz — money-weighted)",
-        "  " + dash,
-        f"  {'Year':<6} {'NAV Start':>12} {'Contributed':>12} {'NAV End':>12} {'Return':>8}",
-    ]
-
-    for r in year_returns:
-        lines.append(
-            f"  {r['year']:<6} "
-            f"€{r['nav_start']:>10,.0f} "
-            f"€{r['contributions']:>10,.0f} "
-            f"€{r['nav_end']:>10,.0f} "
-            f"{r['return_pct']:>+7.1f}%"
-        )
 
     lines += [
         "",
@@ -571,6 +559,7 @@ def _format_report(
         "  ! No Q-score in backtest: fundamental gate (Q>=55) is a live-only filter.",
         "  ! Index-drift: constituent changes not tracked -- universe fixed at today.",
         "  ! XIRR measures return on capital deployed, not absolute portfolio CAGR.",
+        "  ! Currency: each region tracked in local currency -- no FX conversion.",
         "",
         sep,
         "  DISCLAIMER: Research and paper trading only. Not financial advice.",
