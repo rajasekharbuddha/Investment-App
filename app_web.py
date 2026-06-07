@@ -10,7 +10,7 @@ import io
 import json
 import re
 import sys
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 import pandas as pd
@@ -80,7 +80,7 @@ with st.sidebar:
 
 # ── Tabs ───────────────────────────────────────────────────────────────────────
 
-T_SCAN, T_BT, T_LTB, T_LTS, T_WF, T_ST, T_MC, T_PORT, T_REP = st.tabs([
+T_SCAN, T_BT, T_LTB, T_LTS, T_WF, T_ST, T_MC, T_SIP, T_PORT, T_REP = st.tabs([
     "📊 Daily Scan",
     "📈 ST Backtest",
     "🏦 LT Backtest",
@@ -88,6 +88,7 @@ T_SCAN, T_BT, T_LTB, T_LTS, T_WF, T_ST, T_MC, T_PORT, T_REP = st.tabs([
     "🔄 Walk-Forward",
     "💪 Stress Tests",
     "🎲 Monte Carlo",
+    "💰 SIP Plan",
     "💼 Portfolio",
     "📁 Reports",
 ])
@@ -828,7 +829,211 @@ with T_MC:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TAB 8 — Portfolio
+# TAB 8 — SIP Plan
+# ══════════════════════════════════════════════════════════════════════════════
+
+with T_SIP:
+    st.header("💰 Monthly SIP Plan — US + EU Equity Accumulation")
+    st.caption(
+        "Deploy a fixed monthly budget into quality US + EU stocks. "
+        "Selection: SMA uptrend + Q-score ≥ 55 + ranked by momentum. "
+        "Exits: SMA breakdown (10d) or Q-score < 35."
+    )
+
+    # ── Sidebar / config ──────────────────────────────────────────────────────
+    sip_c1, sip_c2, sip_c3, sip_c4 = st.columns(4)
+    with sip_c1:
+        sip_budget = st.number_input("Monthly Budget (€)", min_value=200, max_value=50000,
+                                     value=2000, step=100, key="sip_budget")
+    with sip_c2:
+        sip_markets_sel = st.multiselect("Markets", ["US", "EU"], default=["US", "EU"], key="sip_mkts")
+    with sip_c3:
+        sip_min_q = st.slider("Min Q-Score", 30, 80, 55, key="sip_minq")
+    with sip_c4:
+        sip_top_n = st.number_input("Universe size / market", min_value=20, max_value=500,
+                                     value=100, step=10, key="sip_topn")
+
+    sip_dry = st.checkbox("Dry run (preview only — don't save state)", value=True, key="sip_dry")
+
+    if st.button("▶ Run Monthly SIP Cycle", key="sip_run", type="primary"):
+        if not sip_markets_sel:
+            st.error("Select at least one market.")
+        else:
+            import sys as _sys
+            _sys.path.insert(0, str(ROOT / "src"))
+
+            with st.spinner("Building universe…"):
+                try:
+                    from universe import get_dynamic_watchlist
+                    top_n_map = {m: int(sip_top_n) for m in sip_markets_sel}
+                    watchlist = get_dynamic_watchlist(sip_markets_sel, top_n_map=top_n_map)
+                    all_tickers = [t for m in sip_markets_sel for t in watchlist.get(m, [])]
+                except Exception as _e:
+                    st.error(f"Universe build failed: {_e}")
+                    all_tickers = []
+
+            if all_tickers:
+                _prog = st.progress(0, text="Fetching price data…")
+                with st.spinner("Fetching price data and indicators…"):
+                    from data import fetch_ticker
+                    from indicators import calculate_all
+                    _data_map: dict = {}
+                    for _i, _t in enumerate(all_tickers):
+                        _prog.progress(int(_i / len(all_tickers) * 40), text=f"Price data {_i}/{len(all_tickers)}…")
+                        try:
+                            _df = fetch_ticker(_t, lookback_days=300)
+                            if _df is not None and len(_df) >= 60:
+                                _data_map[_t] = calculate_all(_df)
+                        except Exception:
+                            pass
+
+                with st.spinner("Fetching fundamental Q-scores…"):
+                    from fundamental import fetch_fundamentals, score_fundamentals
+                    _q_scores: dict = {}
+                    for _i, _t in enumerate(all_tickers):
+                        _prog.progress(40 + int(_i / len(all_tickers) * 55), text=f"Q-scores {_i}/{len(all_tickers)}…")
+                        try:
+                            _raw = fetch_fundamentals(_t, use_cache=True)
+                            _sc, _ = score_fundamentals(_raw)
+                            _q_scores[_t] = _sc
+                        except Exception:
+                            _q_scores[_t] = 0.0
+
+                _prog.progress(100, text="Running SIP cycle…")
+                with st.spinner("Running SIP selection…"):
+                    from sip_strategy import run_sip_cycle
+                    _result = run_sip_cycle(
+                        data_map=_data_map,
+                        q_scores=_q_scores,
+                        override_budget=float(sip_budget),
+                        override_min_q=float(sip_min_q),
+                        dry_run=bool(sip_dry),
+                    )
+
+                _prog.empty()
+                st.success(f"Cycle complete — {datetime.now().strftime('%Y-%m-%d')}")
+
+                # ── Exits
+                _exits = _result["exits"]
+                st.subheader(f"Exit / Trim Signals ({len(_exits)})")
+                if _exits:
+                    _exit_rows = []
+                    for _e in _exits:
+                        _exit_rows.append({
+                            "Action":  _e["action"],
+                            "Ticker":  _e["ticker"],
+                            "Shares":  _e["shares"],
+                            "Price €": round(_e["current_price"], 2),
+                            "Gain %":  _e["gain_pct"],
+                            "Reason":  _e["reason"],
+                        })
+                    st.dataframe(_exit_rows, use_container_width=True)
+                else:
+                    st.info("No exit signals — all holdings healthy.")
+
+                # ── This month's buys
+                _alloc = _result["allocation"]
+                st.subheader(f"This Month's Buys — €{sum(_alloc.values()):,.0f} deployed")
+                if _alloc:
+                    _buy_rows = []
+                    for _tk, _eur in _alloc.items():
+                        _c = next((x for x in _result["candidates"] if x["ticker"] == _tk), {})
+                        _buy_rows.append({
+                            "Ticker":  _tk,
+                            "Market":  _c.get("market", ""),
+                            "Sector":  _c.get("sector", ""),
+                            "€ Amount": _eur,
+                            "~Shares": round(_eur / _c.get("price", 1), 1) if _c.get("price") else "—",
+                            "Price €": round(_c.get("price", 0), 2),
+                            "Q-Score": round(_c.get("q_score", 0)),
+                            "Mom %":   round(_c.get("momentum", 0) * 100, 1),
+                            "Score":   round(_c.get("composite", 0), 3),
+                        })
+                    st.dataframe(_buy_rows, use_container_width=True)
+                else:
+                    st.warning("No qualifying candidates this month — hold cash.")
+
+                # ── All candidates
+                with st.expander(f"All {len(_result['candidates'])} passing candidates"):
+                    _cand_rows = []
+                    for _c in _result["candidates"]:
+                        _cand_rows.append({
+                            "Ticker":   _c["ticker"],
+                            "Market":   _c["market"],
+                            "Sector":   _c["sector"],
+                            "Q-Score":  round(_c["q_score"]),
+                            "Mom %":    round(_c["momentum"] * 100, 1),
+                            "Score":    round(_c["composite"], 3),
+                            "Price €":  round(_c["price"], 2),
+                            "Selected": "✓" if _c["ticker"] in _alloc else "",
+                        })
+                    st.dataframe(_cand_rows, use_container_width=True)
+
+                # ── Report text
+                with st.expander("Full text report"):
+                    st.code(_result["report_text"])
+
+                if not sip_dry:
+                    # Save report to reports/
+                    _rpath = ROOT / "reports" / f"sip-{datetime.now().strftime('%Y-%m-%d')}.txt"
+                    _rpath.write_text(_result["report_text"], encoding="utf-8")
+                    st.caption(f"Report saved → {_rpath}")
+
+    # ── Strategy reference card ───────────────────────────────────────────────
+    with st.expander("Strategy Rules Reference"):
+        st.markdown("""
+**Entry criteria (all must pass):**
+1. **Uptrend gate**: SMA_50 > SMA_200 — only buy stocks in confirmed long-term uptrend
+2. **Quality gate**: Fundamental Q-score ≥ 55 (ROE, revenue growth, EPS growth, D/E, margins, FCF yield, PEG, P/B, net margin)
+3. **Ranking**: composite = 40% Q-score + 60% momentum (avg of 1M / 3M / 6M / 12M returns)
+
+**Allocation:**
+- Equal weight across top 5 picks (configurable)
+- Minimum €200 per stock — no micro-allocations
+- Sector cap: no sector may exceed 25% of total portfolio at time of purchase
+- If fewer than 5 candidates pass → deploy to fewer stocks (or hold cash)
+
+**Exit signals (checked each month before buying):**
+- **Structural breakdown**: SMA_50 < SMA_200 for ≥ 10 consecutive trading days → EXIT
+- **Quality deterioration**: Q-score drops below 35 → EXIT
+- **Concentration trim**: Position grows above 15% of portfolio → TRIM to 10%
+
+**What this is NOT:**
+- Not a trading strategy — no trailing stops, no daily signals
+- Not trying to time the market — deploys capital every month regardless of macro
+- Not short-term — target holding period 12–36 months per position
+        """)
+
+    # ── Holdings viewer
+    st.subheader("Current SIP Holdings")
+    from sip_strategy import load_sip_holdings
+    _sip_state = load_sip_holdings()
+    _holdings  = _sip_state.get("holdings", {})
+    st.caption(
+        f"Total deployed: €{_sip_state.get('total_deployed', 0):,.0f}  |  "
+        f"Positions: {len(_holdings)}  |  "
+        f"Started: {_sip_state.get('start_date', '—')}"
+    )
+    if _holdings:
+        _h_rows = []
+        for _t, _h in _holdings.items():
+            _h_rows.append({
+                "Ticker":       _t,
+                "Market":       _h.get("market", ""),
+                "Sector":       _h.get("sector", ""),
+                "Shares":       _h.get("shares", 0),
+                "Avg Cost €":   round(_h.get("avg_cost", 0), 2),
+                "Invested €":   round(_h.get("total_cost_eur", 0), 2),
+                "First Bought": _h.get("first_bought", ""),
+                "Last Added":   _h.get("last_added", ""),
+            })
+        st.dataframe(_h_rows, use_container_width=True)
+    else:
+        st.info("No SIP positions yet. Run the first monthly cycle above.")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 9 — Portfolio
 # ══════════════════════════════════════════════════════════════════════════════
 
 _CURR_SYM   = {"IN": "Rs ", "US": "$", "EU": "€"}
