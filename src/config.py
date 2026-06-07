@@ -197,8 +197,8 @@ REGIME: dict = {
 MARKET_PARAMS: dict[str, dict] = {
     "US": {
         "risk_pct":      {"LOW": 0.10, "NORMAL": 0.08, "HIGH": 0.04, "EXTREME": 0.0},
-        "trail_mult":    {"LOW": 12.0, "NORMAL": 10.0, "HIGH": 6.0,  "EXTREME": 0.0},
-        "stop_mult":     {"LOW": 2.5,  "NORMAL": 2.0,  "HIGH": 3.0,  "EXTREME": 0.0},
+        "trail_mult":    {"LOW": 7.0,  "NORMAL": 5.0,  "HIGH": 3.5,  "EXTREME": 0.0},
+        "stop_mult":     {"LOW": 2.5,  "NORMAL": 2.5,  "HIGH": 3.5,  "EXTREME": 0.0},
         "sma_dist_min":   0.008,
         "volume_mult":    0.65,
         "rsi_lo":         47,
@@ -207,8 +207,8 @@ MARKET_PARAMS: dict[str, dict] = {
     },
     "EU": {
         "risk_pct":      {"LOW": 0.06, "NORMAL": 0.05, "HIGH": 0.03, "EXTREME": 0.0},
-        "trail_mult":    {"LOW": 6.0,  "NORMAL": 7.0,  "HIGH": 4.5,  "EXTREME": 0.0},
-        "stop_mult":     {"LOW": 2.5,  "NORMAL": 2.0,  "HIGH": 3.0,  "EXTREME": 0.0},
+        "trail_mult":    {"LOW": 6.0,  "NORMAL": 5.0,  "HIGH": 3.5,  "EXTREME": 0.0},
+        "stop_mult":     {"LOW": 2.5,  "NORMAL": 2.5,  "HIGH": 3.5,  "EXTREME": 0.0},
         "sma_dist_min":   0.008,
         "volume_mult":    0.65,
         "rsi_lo":         47,
@@ -217,8 +217,8 @@ MARKET_PARAMS: dict[str, dict] = {
     },
     "IN": {
         "risk_pct":      {"LOW": 0.09, "NORMAL": 0.07, "HIGH": 0.04, "EXTREME": 0.0},
-        "trail_mult":    {"LOW": 7.0,  "NORMAL": 7.0,  "HIGH": 5.0,  "EXTREME": 0.0},
-        "stop_mult":     {"LOW": 2.5,  "NORMAL": 2.0,  "HIGH": 3.5,  "EXTREME": 0.0},
+        "trail_mult":    {"LOW": 5.5,  "NORMAL": 4.5,  "HIGH": 3.5,  "EXTREME": 0.0},
+        "stop_mult":     {"LOW": 2.5,  "NORMAL": 3.0,  "HIGH": 4.0,  "EXTREME": 0.0},
         "sma_dist_min":   0.005,
         "volume_mult":    0.55,
         "rsi_lo":         42,

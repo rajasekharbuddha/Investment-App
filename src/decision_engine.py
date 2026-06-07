@@ -33,13 +33,13 @@ def update_trailing_stop(
     highest_price: float,
     atr_val: float,
     current_stop: float,
+    trail_mult: float = 5.5,
 ) -> float:
-    """Calculates a dynamic macro-trend trailing stop using a wide ATR multiplier floor."""
+    """Calculates a dynamic trailing stop: peak - trail_mult × ATR."""
     if np.isnan(atr_val) or atr_val <= 0:
         return current_stop
 
-    # 5.5x ATR tighter lock — captures IN trend gains before mean reversion fires
-    dynamic_buffer = atr_val * 5.5
+    dynamic_buffer = atr_val * trail_mult
     new_stop_floor = highest_price - dynamic_buffer
 
     # Ensure the trailing stop only moves upward to lock in profits
@@ -289,8 +289,9 @@ class DecisionEngine:
                 action["action"] = "MOVE_STOP"
                 action["reason"] = "+1R breakeven"
 
-            # Trailing stop — 5.5× ATR floor (tighter lock-in for IN mean reversion)
-            new_stop = update_trailing_stop(close, peak, atr, stop)
+            # Trailing stop: uses trail_mult from position (set by MARKET_PARAMS at entry)
+            pos_trail_mult = pos.get("trail_mult", 5.5)
+            new_stop = update_trailing_stop(close, peak, atr, stop, pos_trail_mult)
             if new_stop > stop:
                 stop = new_stop
                 action["action"] = "MOVE_STOP"
