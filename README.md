@@ -9,17 +9,18 @@ Systematic stock research, signal generation, and strategy backtesting across US
 ## Table of Contents
 
 1. [Overview](#overview)
-2. [Features](#features)
-3. [Architecture](#architecture)
-4. [Installation](#installation)
-5. [Quick Start](#quick-start)
-6. [Desktop App Tabs](#desktop-app-tabs)
-7. [Browser App Tabs](#browser-app-tabs)
-8. [CLI Tools](#cli-tools)
-9. [Strategy Details](#strategy-details)
-10. [Configuration](#configuration)
-11. [File Structure](#file-structure)
-12. [Markets Supported](#markets-supported)
+2. [Backtest Results](#backtest-results)
+3. [Features](#features)
+4. [Architecture](#architecture)
+5. [Installation](#installation)
+6. [Quick Start](#quick-start)
+7. [Desktop App Tabs](#desktop-app-tabs)
+8. [Browser App Tabs](#browser-app-tabs)
+9. [CLI Tools](#cli-tools)
+10. [Strategy Details](#strategy-details)
+11. [Configuration](#configuration)
+12. [File Structure](#file-structure)
+13. [Markets Supported](#markets-supported)
 
 ---
 
@@ -33,6 +34,84 @@ Mastermind Pro combines two complementary investment frameworks:
 | **Long-Term (Fundamental + Momentum)** | Months to years | Fundamental Q-score pre-screen → momentum rotation → exit-watch signals |
 
 Both modes are accessible from either the desktop GUI or the browser UI. All `src/` strategy modules are shared — any config change applies to both interfaces.
+
+---
+
+## Backtest Results
+
+All results are simulated on historical data. IN market (Nifty 250 universe), Rs 1,00,000 starting equity, 0.10% commission + 0.10% slippage one-way.
+
+### Best Results at a Glance
+
+| Strategy | Best Window | CAGR | Sharpe | Max DD | Alpha vs Nifty |
+|----------|------------|------|--------|--------|----------------|
+| **Short-Term ATR-Dynamic** (Run 17) | 3yr — Jan 2023–May 2026 | **20.77%** | **1.245** | -16.68% | **+12.62%** |
+| **Short-Term ATR-Dynamic** (Run 17) | 10yr — Jan 2016–May 2026 | **14.05%** | **0.862** | -25.97% | **+2.73%** |
+| **Long-Term Momentum Rotation** | 11yr — Jan 2015–May 2026 | **~28%** | — | — | significant |
+
+---
+
+### Short-Term ATR-Dynamic — Run 17 (Locked Config)
+
+Run 17 is the result of 22 sequential backtesting iterations, each changing one parameter at a time. Parameters locked because they produced the best risk-adjusted return.
+
+#### Results
+
+| Window | CAGR | Total Return | Max DD | Sharpe | Alpha vs Nifty |
+|--------|------|-------------|--------|--------|----------------|
+| **10yr** (Jan 2016 – May 2026) | **14.05%** | +292% (₹1L → ₹3.92L) | -25.97% | 0.862 | +2.73% |
+| **3yr** (Jan 2023 – May 2026) | **20.77%** | +89.68% | -16.68% | 1.245 | +12.62% |
+
+#### Best Parameters
+
+| Parameter | Locked Value | Why |
+|-----------|-------------|-----|
+| Max positions | **8 slots** | 3-slot concentrated underperforms (12.06% vs 14.05% CAGR) |
+| Position size | **24% baseline / 32% cap** | R-based, velocity leaders get the ceiling |
+| Trailing stop | **5.5× ATR** | Tested 3–6×; 5.5 eliminates whipsaws without giving back too much |
+| Momentum periods | **[14, 30, 63]** | [7,14,30] causes churn; [14,30,63] captures established trends |
+| Momentum exit threshold | **0.0** | −0.15 lets declining stocks ride — hurts Sharpe significantly |
+| Breakeven floor | **+1R** | Moves stop to entry price once trade reaches 1× initial risk |
+| Circuit breaker | **Disabled** | Reducing size during drawdowns missed recoveries, hurt CAGR |
+| IN sector cap | **1.0** | Capped at 0.50, only 4/8 slots fill (all IN stocks = "Unknown") |
+| Entry grace period | **7 days** | Prevents momentum exit firing on post-entry consolidation |
+| Immunity window | **21 days** | Prevents whipsaw churn after a stop-loss exit |
+
+**Gate parameters (India):** `sma_dist_min=0.5%`, `volume_mult=0.55×`, `RSI [42–80]`, `macd_hist_eps=0.0`
+
+**Gate parameters (US):** `sma_dist_min=0.8%`, `volume_mult=0.65×`, `RSI [47–78]`, `macd_hist_eps=0.0`
+
+**Gate parameters (EU):** `sma_dist_min=0.8%`, `volume_mult=0.65×`, `RSI [47–78]`, `macd_hist_eps=−0.001`
+
+---
+
+### Long-Term Momentum Rotation — Best Config
+
+Quarterly momentum rebalancing across Nifty 250 universe with SMA breakdown exit.
+
+#### Results
+
+| Window | CAGR | Market | Benchmark |
+|--------|------|--------|-----------|
+| **11yr** (Jan 2015 – May 2026) | **~28%** | IN | Significant alpha vs Nifty 50 |
+
+#### Best Parameters
+
+| Parameter | Value | Notes |
+|-----------|-------|-------|
+| Max positions | **10 slots** | Equal-weight allocation |
+| Rebalance interval | **63 days (Quarterly)** | Balances turnover vs trend capture |
+| Breakdown exit | **ON** | Exit immediately on SMA_50 < SMA_200 |
+| Momentum floor | **−5%** | Exit at rebalance if avg momentum score < −5% |
+| Momentum periods | **[14, 30, 63]** | Same as short-term entry ranking |
+| Commission + slippage | **0.10% + 0.10%** one-way | |
+
+**Sell triggers (three independent):**
+1. Daily SMA_50 < SMA_200 → exit immediately
+2. Momentum score < −5% at rebalance → exit-watch proxy (fundamental weakness signal)
+3. Dropped out of top-10 ranking → rotation to stronger stock
+
+---
 
 ### Two interfaces, one engine
 
@@ -451,12 +530,7 @@ All CLI runners live in `src/` and support `--help` for full argument lists.
 
 **Adaptive tuner:** Monitors signal density. If density is too low, loosens gate parameters (SOFT → ULTRA_SOFT). If too high, tightens (BASE → STRICT). Transitions over 3 days with EMA smoothing.
 
-**Backtest results — Run 17 locked config (IN market):**
-
-| Window | CAGR | Total Return | Max DD | Sharpe | Alpha vs Nifty |
-|--------|------|-------------|--------|--------|----------------|
-| 10-year (Jan 2016 – May 2026) | 14.05% | +292% (₹1L → ₹3.92L) | -25.97% | 0.862 | +2.73% |
-| 3-year (Jan 2023 – May 2026) | 20.77% | +89.68% | -16.68% | 1.245 | +12.62% |
+**Backtest results:** See [Backtest Results → Short-Term ATR-Dynamic](#short-term-atr-dynamic--run-17-locked-config) for the full results table and parameter rationale.
 
 ---
 
@@ -494,7 +568,13 @@ All CLI runners live in `src/` and support `--help` for full argument lists.
 
 *Momentum floor (backtest proxy):* Exit at rebalance if avg momentum score < –5% (default). Set to –99 to disable.
 
-**Long-term backtest results (IN market, 2015–2026):** ~28% CAGR, significant alpha over Nifty.
+**Long-term backtest results — best config (IN market):**
+
+| Window | CAGR | Market | Rebalance | Slots | Breakdown Exit | Mom. Floor |
+|--------|------|--------|-----------|-------|---------------|------------|
+| 11yr (Jan 2015 – May 2026) | **~28%** | IN (Nifty 250) | Quarterly (63d) | 10 | ON | −5% |
+
+See the [Backtest Results](#backtest-results) section above for the full parameter breakdown.
 
 ---
 
