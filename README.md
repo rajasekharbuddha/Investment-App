@@ -17,9 +17,10 @@ Systematic stock research, signal generation, and strategy backtesting across US
 7. [Browser App Tabs](#browser-app-tabs)
 8. [CLI Tools](#cli-tools)
 9. [Strategy Details](#strategy-details)
-10. [Configuration](#configuration)
-11. [File Structure](#file-structure)
-12. [Markets Supported](#markets-supported)
+10. [Backtest Results](#backtest-results)
+11. [Configuration](#configuration)
+12. [File Structure](#file-structure)
+13. [Markets Supported](#markets-supported)
 
 ---
 
@@ -458,6 +459,24 @@ All CLI runners live in `src/` and support `--help` for full argument lists.
 | 10-year (Jan 2016 – May 2026) | 14.05% | +292% (₹1L → ₹3.92L) | -25.97% | 0.862 | +2.73% |
 | 3-year (Jan 2023 – May 2026) | 20.77% | +89.68% | -16.68% | 1.245 | +12.62% |
 
+**Locked parameters (Run 17) producing these results:**
+
+| Parameter | Value |
+|-----------|-------|
+| Max open positions | 8 slots |
+| Position size | 24% of equity (32% cap for momentum leaders) |
+| Trailing stop | 5.5× ATR |
+| Momentum scoring periods | [14, 30, 63] trading days |
+| Momentum exit threshold | 0.0 — exit when score turns negative |
+| Momentum exit grace period | 7 calendar days |
+| Circuit breaker | Disabled |
+| RSI range (IN) | 42–80 |
+| Volume multiplier (IN) | 0.55× 20-day average |
+| SMA distance minimum (IN) | 0.5% |
+| Replacement immunity window | 21 calendar days |
+
+> Full 22-run parameter derivation in [RUN17_STRATEGY.md](RUN17_STRATEGY.md).
+
 ---
 
 ### Long-Term Fundamental + Momentum Strategy
@@ -494,7 +513,110 @@ All CLI runners live in `src/` and support `--help` for full argument lists.
 
 *Momentum floor (backtest proxy):* Exit at rebalance if avg momentum score < –5% (default). Set to –99 to disable.
 
-**Long-term backtest results (IN market, 2015–2026):** ~28% CAGR, significant alpha over Nifty.
+**Long-term backtest results (IN market, Jan 2015 – Jun 2026):**
+
+| Window | CAGR | Slots | Rebalance | Breakdown Exit | Momentum Floor |
+|--------|------|-------|-----------|---------------|----------------|
+| 11-year (Jan 2015 – Jun 2026) | **~28%** | 10 | Quarterly (63d) | ON | -5% |
+
+**Best configuration producing ~28% CAGR:**
+
+| Parameter | Value |
+|-----------|-------|
+| Slots (equal-weight positions) | 10 |
+| Rebalance interval | Quarterly — 63 trading days |
+| Breakdown exit | ON (daily exit on SMA_50 < SMA_200) |
+| Momentum floor | -5% (rotate out weak positions at rebalance) |
+| Momentum scoring periods | [14, 30, 63] trading days |
+| Universe | Nifty 250 (quality-scored top-250) |
+| Commission / Slippage | 0.10% each way |
+
+> Survivorship bias present — uses current Nifty 250 constituents. Fundamental data not replayed; SMA_50/200 + momentum score used as proxy for exit conditions.
+
+---
+
+### Momentum Rotation Results
+
+The momentum rotation engine scores all universe stocks by mean return across **[14, 30, 63] trading-day periods** and rotates the portfolio quarterly into the highest-ranked positions that pass the structural gate (SMA_50 > SMA_200 + Close > SMA_200 + SMA_50 rising).
+
+**Best momentum rotation results (IN market, Nifty 250 universe):**
+
+| Window | CAGR | Alpha vs Nifty | Rebalance | Slots | Mom Floor |
+|--------|------|----------------|-----------|-------|-----------|
+| 11-year (Jan 2015 – Jun 2026) | **~28%** | Significant positive | Quarterly (63d) | 10 | -5% |
+
+**Key momentum rotation parameters:**
+
+| Parameter | Value |
+|-----------|-------|
+| Scoring periods | [14, 30, 63] trading days |
+| Score | Mean % return across all three periods |
+| Structural gate | SMA_50 > SMA_200, Close > SMA_200, SMA_50 rising (5-day) |
+| Rotation trigger | Dropped from top-N ranking at rebalance |
+| Weakness exit | Score < -5% at rebalance date |
+| Breakdown exit | SMA_50 < SMA_200 — checked daily |
+| Best rebalance frequency | Quarterly (63d) — monthly adds excess turnover cost |
+| Best slot count | 10 (fewer = more volatile; more = diluted alpha) |
+
+---
+
+## Backtest Results
+
+Summary of the best validated results for each strategy. All backtests use 0.10% commission and 0.10% slippage per side. IN market = Nifty 250 universe.
+
+### Short-Term ATR-Dynamic — Best Results (Run 17, IN Market)
+
+> Reached after 22 sequential optimization runs. Config is locked — do not change without re-running the full 10-year backtest. See [RUN17_STRATEGY.md](RUN17_STRATEGY.md).
+
+| Window | CAGR | Total Return | Max DD | Sharpe | Alpha vs Nifty |
+|--------|------|-------------|--------|--------|----------------|
+| 10-year (Jan 2016 – May 2026) | **14.05%** | +292% (₹1L → ₹3.92L) | -25.97% | 0.862 | +2.73% |
+| 3-year (Jan 2023 – May 2026) | **20.77%** | +89.68% | -16.68% | 1.245 | +12.62% |
+
+| Key Parameter | Value |
+|---------------|-------|
+| Max positions | 8 |
+| Position size | 24% baseline, 32% cap |
+| Trailing stop | 5.5× ATR |
+| RSI gate (IN) | 42–80 |
+| Momentum periods | [14, 30, 63] days |
+| Circuit breaker | Disabled |
+
+---
+
+### Long-Term Fundamental + Momentum — Best Results (IN Market)
+
+| Window | CAGR | Slots | Rebalance | Breakdown Exit | Mom Floor |
+|--------|------|-------|-----------|---------------|-----------|
+| 11-year (Jan 2015 – Jun 2026) | **~28%** | 10 | Quarterly | ON | -5% |
+
+| Key Parameter | Value |
+|---------------|-------|
+| Slots | 10 equal-weight |
+| Rebalance | Quarterly (63 trading days) |
+| Breakdown exit | ON — exit on SMA_50 < SMA_200 |
+| Momentum floor | -5% |
+| Universe | Nifty 250 top-250 quality-scored |
+
+> Survivorship bias present. Fundamental data not replayed; SMA + momentum score used as proxy for exit signals.
+
+---
+
+### Momentum Rotation — Best Results (IN Market)
+
+| Window | CAGR | Alpha vs Nifty | Rebalance | Slots | Mom Floor |
+|--------|------|----------------|-----------|-------|-----------|
+| 11-year (Jan 2015 – Jun 2026) | **~28%** | Significant positive | Quarterly (63d) | 10 | -5% |
+
+| Key Parameter | Value |
+|---------------|-------|
+| Scoring periods | [14, 30, 63] trading days |
+| Structural gate | SMA_50 > SMA_200 + Close > SMA_200 + SMA_50 rising |
+| Rotation | Drop from top-N ranking at rebalance |
+| Weakness exit | Score < -5% at rebalance |
+| Breakdown exit | SMA_50 < SMA_200 (daily) |
+| Best rebalance | Quarterly — monthly adds excess turnover |
+| Best slot count | 10 |
 
 ---
 
