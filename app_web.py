@@ -81,7 +81,7 @@ with st.sidebar:
 
 # ── Tabs ───────────────────────────────────────────────────────────────────────
 
-T_SCAN, T_BT, T_LTB, T_LTS, T_WF, T_ST, T_MC, T_SIP, T_PORT, T_REP = st.tabs([
+T_SCAN, T_BT, T_LTB, T_LTS, T_WF, T_ST, T_MC, T_SIP, T_SIM, T_PORT, T_REP = st.tabs([
     "📊 Daily Scan",
     "📈 ST Backtest",
     "🏦 LT Backtest",
@@ -90,6 +90,7 @@ T_SCAN, T_BT, T_LTB, T_LTS, T_WF, T_ST, T_MC, T_SIP, T_PORT, T_REP = st.tabs([
     "💪 Stress Tests",
     "🎲 Monte Carlo",
     "💰 SIP Plan",
+    "🧮 Compounding Sim",
     "💼 Portfolio",
     "📁 Reports",
 ])
@@ -1261,7 +1262,384 @@ with T_SIP:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TAB 9 — Portfolio
+# TAB 9 — Compounding Simulator
+# ══════════════════════════════════════════════════════════════════════════════
+
+with T_SIM:
+    st.header("🧮 Financial Compounding Simulator")
+    st.caption(
+        "Two-phase wealth model — Phase 1 'Matching Velocity' (active monthly contributions matching "
+        "the lump sum's organic growth) followed by Phase 2 'Pure Compounding' (contributions drop to zero). "
+        "Independent of the trading strategies in the other tabs — pure compound-interest mathematics."
+    )
+
+    # Per-region currency config: digit grouping, "big unit" for abbreviated display
+    # (Crore for INR, Million for USD/EUR), sensible defaults, and absolute milestone amounts.
+    _SIM_CCY = {
+        "IN": {
+            "flag": "🇮🇳", "name": "India", "symbol": "₹", "grouping": "indian",
+            "big_unit": 1_00_00_000.0, "big_label": "Cr",
+            "default_capital": 1.0, "capital_step": 0.1, "capital_max": 1000.0, "capital_fmt": "%.2f",
+            "default_contribution": 100000.0, "contribution_step": 5000.0,
+            "milestones": {"1 Cr": 1_00_00_000.0, "3 Cr": 3_00_00_000.0, "6 Cr": 6_00_00_000.0, "10 Cr": 10_00_00_000.0},
+        },
+        "US": {
+            "flag": "🇺🇸", "name": "United States", "symbol": "$", "grouping": "western",
+            "big_unit": 1_000_000.0, "big_label": "M",
+            "default_capital": 100_000.0, "capital_step": 10_000.0, "capital_max": 100_000_000.0, "capital_fmt": "%.0f",
+            "default_contribution": 1_000.0, "contribution_step": 100.0,
+            "milestones": {"100K": 100_000.0, "300K": 300_000.0, "600K": 600_000.0, "1M": 1_000_000.0},
+        },
+        "EU": {
+            "flag": "🇪🇺", "name": "Europe", "symbol": "€", "grouping": "western",
+            "big_unit": 1_000_000.0, "big_label": "M",
+            "default_capital": 100_000.0, "capital_step": 10_000.0, "capital_max": 100_000_000.0, "capital_fmt": "%.0f",
+            "default_contribution": 1_000.0, "contribution_step": 100.0,
+            "milestones": {"100K": 100_000.0, "300K": 300_000.0, "600K": 600_000.0, "1M": 1_000_000.0},
+        },
+    }
+
+    def _sim_on_region_change():
+        _r = st.session_state["sim_region"]
+        _c = _SIM_CCY[_r]
+        st.session_state["sim_capital"] = _c["default_capital"]
+        st.session_state["sim_p1_contribution"] = _c["default_contribution"]
+
+    sim_region = st.selectbox(
+        "Currency / Region", ["IN", "US", "EU"],
+        format_func=lambda r: f"{_SIM_CCY[r]['flag']} {_SIM_CCY[r]['name']} ({_SIM_CCY[r]['symbol']})",
+        key="sim_region", on_change=_sim_on_region_change,
+    )
+    _ccy = _SIM_CCY[sim_region]
+
+    def _fmt_indian_grouped(amount: float) -> str:
+        """Indian digit grouping (1,00,000 style)."""
+        neg = amount < 0
+        whole = f"{abs(amount):,.0f}".replace(",", "")
+        if len(whole) <= 3:
+            grouped = whole
+        else:
+            grouped = whole[-3:]
+            rest = whole[:-3]
+            while rest:
+                grouped = rest[-2:] + "," + grouped
+                rest = rest[:-2]
+        return f"{'-' if neg else ''}{_ccy['symbol']}{grouped}"
+
+    def _esc_md(s: str) -> str:
+        """Escape $ so Streamlit's markdown/KaTeX renderer doesn't mangle it
+        (a bare $ opens inline math mode in st.caption/markdown/info/help)."""
+        return s.replace("$", "\\$")
+
+    def _fmt_full(amount: float) -> str:
+        """Full-precision amount, locale-grouped, markdown-safe (for captions/help text)."""
+        if _ccy["grouping"] == "indian":
+            out = _fmt_indian_grouped(amount)
+        else:
+            out = f"{_ccy['symbol']}{amount:,.0f}"
+        return _esc_md(out)
+
+    # ── Inputs
+    _sim_c1, _sim_c2, _sim_c3, _sim_c4 = st.columns(4)
+    with _sim_c1:
+        if sim_region == "IN":
+            sim_capital_raw = st.number_input(
+                f"Initial capital ({_ccy['symbol']} Cr)", min_value=0.01, max_value=_ccy["capital_max"],
+                value=_ccy["default_capital"], step=_ccy["capital_step"], format=_ccy["capital_fmt"],
+                key="sim_capital",
+            )
+            sim_initial_capital = sim_capital_raw * _ccy["big_unit"]
+        else:
+            sim_capital_raw = st.number_input(
+                f"Initial capital ({_ccy['symbol']})", min_value=1000.0, max_value=_ccy["capital_max"],
+                value=_ccy["default_capital"], step=_ccy["capital_step"], format=_ccy["capital_fmt"],
+                key="sim_capital",
+            )
+            sim_initial_capital = sim_capital_raw
+    with _sim_c2:
+        sim_roi_pct = st.slider("Target annual ROI (%)", min_value=8.0, max_value=15.0,
+                                 value=12.0, step=0.5, key="sim_roi")
+    with _sim_c3:
+        sim_p1_years = st.number_input("Phase 1 years", min_value=1, max_value=20, value=6, step=1, key="sim_p1y")
+    with _sim_c4:
+        sim_p2_years = st.number_input("Phase 2 years", min_value=1, max_value=30, value=10, step=1, key="sim_p2y")
+
+    sim_target_roi = sim_roi_pct / 100.0
+    _sim_auto_contribution = sim_initial_capital * sim_target_roi / 12.0
+
+    def _sim_use_auto_contribution():
+        st.session_state["sim_p1_contribution"] = round(_sim_auto_contribution, -2)
+
+    _sim_cc1, _sim_cc2 = st.columns([3, 1])
+    with _sim_cc1:
+        sim_monthly_contribution = st.number_input(
+            f"Phase 1 monthly contribution ({_ccy['symbol']})", min_value=0.0, max_value=1_00_00_000.0,
+            value=_ccy["default_contribution"], step=_ccy["contribution_step"], format="%.0f",
+            key="sim_p1_contribution",
+            help="Active amount you manually contribute each month during Phase 1. Held flat for the whole phase.",
+        )
+    with _sim_cc2:
+        st.markdown("<div style='height: 1.85em'></div>", unsafe_allow_html=True)
+        st.button(
+            "↺ Match auto", key="sim_p1_auto_btn", on_click=_sim_use_auto_contribution,
+            help=f"Set to {_fmt_full(_sim_auto_contribution)}/month — matches the lump sum's initial annual "
+                 f"organic growth ({_fmt_full(sim_initial_capital * sim_target_roi)}/yr ÷ 12) at the current "
+                 f"capital and ROI.",
+        )
+
+    st.caption(
+        f"Held flat at **{_fmt_full(sim_monthly_contribution)}/month** for all {int(sim_p1_years)} years of Phase 1. "
+        f"Auto-match value at current capital/ROI: {_fmt_full(_sim_auto_contribution)}/month."
+    )
+
+    sim_mode = st.radio(
+        "Mode", ["Flat ROI (deterministic)", "Stress Test (volatility / sequence-of-returns risk)"],
+        horizontal=True, key="sim_mode",
+    )
+    _sim_stress = sim_mode.startswith("Stress")
+
+    if _sim_stress:
+        _sim_v1, _sim_v2 = st.columns(2)
+        with _sim_v1:
+            sim_volatility_pct = st.slider("Annual return volatility (std dev, %)", min_value=5.0, max_value=30.0,
+                                            value=15.0, step=1.0, key="sim_vol")
+        with _sim_v2:
+            sim_n_sims = st.number_input("Monte Carlo simulations", min_value=50, max_value=5000,
+                                          value=500, step=50, key="sim_nsims")
+
+    if st.button("▶ Run Simulation", type="primary", key="sim_run"):
+        import sys as _sys
+        _sys.path.insert(0, str(ROOT / "src"))
+        from compounding_simulator import (
+            simulate, rule_of_72_check, milestone_crossings, monte_carlo, executive_summary,
+        )
+
+        # Deterministic baseline always computed — used for the ledger, chart, and Rule-of-72 check,
+        # and as a comparison point even in stress-test mode.
+        _sim_df = simulate(
+            initial_capital=sim_initial_capital,
+            target_roi=sim_target_roi,
+            phase1_years=int(sim_p1_years),
+            phase2_years=int(sim_p2_years),
+            phase1_monthly_contribution=float(sim_monthly_contribution),
+        )
+        _milestones_hit = milestone_crossings(_sim_df, _ccy["milestones"])
+        _r72 = rule_of_72_check(sim_target_roi)
+
+        _mc = None
+        if _sim_stress:
+            with st.spinner(f"Running {int(sim_n_sims)} randomized simulations…"):
+                _goal_amount = list(_ccy["milestones"].values())[-1]
+                _mc = monte_carlo(
+                    initial_capital=sim_initial_capital,
+                    target_roi=sim_target_roi,
+                    phase1_years=int(sim_p1_years),
+                    phase2_years=int(sim_p2_years),
+                    phase1_monthly_contribution=float(sim_monthly_contribution),
+                    volatility=sim_volatility_pct / 100.0,
+                    n_sims=int(sim_n_sims),
+                    goal=_goal_amount,
+                )
+
+        # Stash everything needed to render, keyed by the inputs active at run time — so
+        # later widget interactions (e.g. toggling the ledger's Yearly/Monthly view) just
+        # rerun the script without wiping these results or re-running the simulation.
+        st.session_state["sim_results"] = {
+            "df": _sim_df, "milestones_hit": _milestones_hit, "r72": _r72, "mc": _mc,
+            "ccy": _ccy, "region": sim_region, "roi_pct": sim_roi_pct,
+            "p1_years": int(sim_p1_years), "p2_years": int(sim_p2_years),
+            "stress": _sim_stress, "volatility_pct": sim_volatility_pct if _sim_stress else None,
+            "n_sims": int(sim_n_sims) if _sim_stress else None,
+        }
+
+    # ── Render last-run results (persisted in session_state so widget interactions below,
+    # like the ledger view toggle, don't clear the results the way rerunning inside the
+    # button block would).
+    if "sim_results" in st.session_state:
+        _res = st.session_state["sim_results"]
+        _sim_df, _r_ccy = _res["df"], _res["ccy"]
+
+        def _r_fmt_full(amount: float) -> str:
+            if _r_ccy["grouping"] == "indian":
+                neg = amount < 0
+                whole = f"{abs(amount):,.0f}".replace(",", "")
+                if len(whole) <= 3:
+                    grouped = whole
+                else:
+                    grouped = whole[-3:]
+                    rest = whole[:-3]
+                    while rest:
+                        grouped = rest[-2:] + "," + grouped
+                        rest = rest[:-2]
+                return f"{'-' if neg else ''}{_r_ccy['symbol']}{grouped}"
+            return f"{_r_ccy['symbol']}{amount:,.0f}"
+
+        def _r_fmt_big(amount: float) -> str:
+            """Abbreviated amount for tables/metrics/prose. INR always shows in Cr
+            (the idiomatic unit regardless of magnitude); USD/EUR switch between K
+            and M so a $100K capital doesn't read as the awkward '$0.10 M'."""
+            if _r_ccy["grouping"] == "indian":
+                return f"{_r_ccy['symbol']}{amount / _r_ccy['big_unit']:,.2f} {_r_ccy['big_label']}"
+            if abs(amount) >= 1_000_000:
+                return f"{_r_ccy['symbol']}{amount / 1_000_000:,.2f}M"
+            if abs(amount) >= 1_000:
+                return f"{_r_ccy['symbol']}{amount / 1_000:,.1f}K"
+            return f"{_r_ccy['symbol']}{amount:,.0f}"
+
+        def _r_esc_md(s: str) -> str:
+            """Escape $ for markdown/KaTeX contexts (st.caption/markdown/info/metric label)."""
+            return s.replace("$", "\\$")
+
+        import sys as _sys
+        _sys.path.insert(0, str(ROOT / "src"))
+        import plotly.graph_objects as go
+        from compounding_simulator import executive_summary as _executive_summary
+
+        # ── Executive Summary
+        st.subheader("Executive Summary")
+        _exec_df = _executive_summary(_sim_df)
+        st.dataframe(
+            [{"Year": int(r["Year"]), "Balance": _r_fmt_big(r["Balance"])} for _, r in _exec_df.iterrows()],
+            use_container_width=True, hide_index=True,
+        )
+
+        # ── Milestones
+        _ms_cols = st.columns(len(_r_ccy["milestones"]))
+        for _col, (_label, _yr) in zip(_ms_cols, _res["milestones_hit"].items()):
+            with _col:
+                st.metric(_r_esc_md(f"{_r_ccy['symbol']}{_label}"), f"{_yr:.2f} yr" if _yr is not None else "not reached")
+
+        # ── Rule of 72 validation
+        _r72 = _res["r72"]
+        st.info(
+            f"**Rule of 72 validation** — theoretical doubling time at {_res['roi_pct']:.1f}% ROI: "
+            f"72 ÷ {_res['roi_pct']:.1f} = **{_r72['theoretical_years']:.2f} years**. "
+            f"Actual monthly-compounded doubling time (no contributions): **{_r72['actual_years']:.2f} years** "
+            f"({_r72['difference_years']:+.2f} yr vs. the Rule-of-72 approximation — monthly compounding at a "
+            f"fixed annual rate doesn't land exactly on the simplified rule)."
+        )
+
+        # ── Chart — Plotly, phase-colour-coded with milestone lines
+        _p1_df = _sim_df[_sim_df["Phase"] == 1]
+        _p2_df = _sim_df[_sim_df["Phase"] == 2]
+
+        _fig = go.Figure()
+        _fig.add_trace(go.Scatter(
+            x=_p1_df["GlobalMonth"] / 12.0, y=_p1_df["EndingBalance"] / _r_ccy["big_unit"],
+            mode="lines", name="Phase 1 — Matching Velocity",
+            line=dict(color="#e15759", width=2.5),
+        ))
+        _fig.add_trace(go.Scatter(
+            x=_p2_df["GlobalMonth"] / 12.0, y=_p2_df["EndingBalance"] / _r_ccy["big_unit"],
+            mode="lines", name="Phase 2 — Pure Compounding",
+            line=dict(color="#4e79a7", width=2.5),
+        ))
+        for _label, _amount in _r_ccy["milestones"].items():
+            _fig.add_hline(
+                y=_amount / _r_ccy["big_unit"], line_dash="dot", line_color="gray", opacity=0.6,
+                annotation_text=f"{_r_ccy['symbol']}{_label}", annotation_position="right",
+            )
+        _fig.update_layout(
+            xaxis_title="Years", yaxis_title=f"Portfolio Value ({_r_ccy['symbol']} {_r_ccy['big_label']})",
+            height=480, margin=dict(l=10, r=10, t=30, b=10),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        )
+        st.plotly_chart(_fig, use_container_width=True)
+
+        # ── Ledger (yearly aggregation by default, monthly on request)
+        st.subheader("Ledger")
+        _ledger_view = st.radio("View", ["Yearly", "Monthly"], horizontal=True, key="sim_ledger_view")
+        if _ledger_view == "Yearly":
+            _ledger = _sim_df.groupby("Year").agg(
+                Phase=("Phase", "first"),
+                StartingBalance=("StartingBalance", "first"),
+                ActiveContribution=("Contribution", "sum"),
+                GrowthEarned=("GrowthEarned", "sum"),
+                EndingBalance=("EndingBalance", "last"),
+            ).reset_index()
+        else:
+            _ledger = _sim_df.rename(columns={"Contribution": "ActiveContribution"})[
+                ["Year", "Month", "Phase", "StartingBalance", "ActiveContribution", "GrowthEarned", "EndingBalance"]
+            ]
+        _money_cols = ["StartingBalance", "ActiveContribution", "GrowthEarned", "EndingBalance"]
+        _ledger_display = _ledger.copy()
+        _ledger_display["Phase"] = _ledger_display["Phase"].map({1: "1 — Matching Velocity", 2: "2 — Pure Compounding"})
+        for _col in _money_cols:
+            _ledger_display[_col] = _ledger_display[_col].apply(_r_fmt_full)
+        st.dataframe(_ledger_display, use_container_width=True, hide_index=True)
+        st.download_button(
+            "⬇ Download Ledger CSV (raw numbers)", _ledger.round(2).to_csv(index=False).encode("utf-8"),
+            file_name="compounding_ledger.csv", mime="text/csv", key="sim_dl_ledger",
+        )
+
+        # ── Stress test / Monte Carlo
+        if _res["stress"] and _res["mc"] is not None:
+            _mc = _res["mc"]
+            _goal_label, _goal_amount = list(_r_ccy["milestones"].items())[-1]
+
+            st.subheader("Stress Test — Sequence-of-Returns Risk")
+            _mc_c1, _mc_c2, _mc_c3 = st.columns(3)
+            with _mc_c1:
+                st.metric(_r_esc_md(f"Success rate (reach {_r_ccy['symbol']}{_goal_label} in window)"),
+                           f"{_mc['success_rate']*100:.1f}%")
+            with _mc_c2:
+                st.metric("Median final balance", _r_fmt_big(_mc["percentiles"]["p50"]))
+            with _mc_c3:
+                st.metric(_r_esc_md(f"Median years to {_r_ccy['symbol']}{_goal_label}"),
+                           f"{_mc['median_years_to_goal']:.1f} yr" if _mc["median_years_to_goal"] else "—")
+
+            _pct_df = pd.DataFrame([
+                {"Percentile": k, "Final Balance": _r_fmt_big(v)}
+                for k, v in _mc["percentiles"].items()
+            ])
+            st.dataframe(_pct_df, use_container_width=True, hide_index=True)
+
+            _hist_fig = go.Figure()
+            _hist_fig.add_trace(go.Histogram(
+                x=_mc["final_balances"] / _r_ccy["big_unit"], nbinsx=40,
+                marker_color="#4e79a7", opacity=0.85,
+            ))
+            _hist_fig.add_vline(x=_goal_amount / _r_ccy["big_unit"], line_dash="dash", line_color="#e15759",
+                                 annotation_text=f"{_r_ccy['symbol']}{_goal_label} goal", annotation_position="top")
+            _hist_fig.add_vline(x=_sim_df["EndingBalance"].iloc[-1] / _r_ccy["big_unit"],
+                                 line_dash="dot", line_color="gray",
+                                 annotation_text="Flat-ROI baseline", annotation_position="top left")
+            _hist_fig.update_layout(
+                xaxis_title=f"Final Portfolio Value ({_r_ccy['symbol']} {_r_ccy['big_label']})",
+                yaxis_title="Simulations",
+                height=380, margin=dict(l=10, r=10, t=30, b=10),
+            )
+            st.plotly_chart(_hist_fig, use_container_width=True)
+
+            _median_delta = _mc["percentiles"]["p50"] - _sim_df["EndingBalance"].iloc[-1]
+            st.markdown(_r_esc_md(
+                f"**Strategic insight:** across {_res['n_sims']} randomized {_res['volatility_pct']:.0f}%-volatility "
+                f"paths, only **{_mc['success_rate']*100:.1f}%** reach the {_r_ccy['symbol']}{_goal_label} goal "
+                f"within the {_res['p1_years']+_res['p2_years']}-year window, versus the flat-ROI baseline of "
+                f"{_r_fmt_big(_sim_df['EndingBalance'].iloc[-1])}. The median outcome "
+                f"({_r_fmt_big(_mc['percentiles']['p50'])}) sits "
+                f"{'below' if _median_delta < 0 else 'above'} the deterministic baseline by "
+                f"{_r_fmt_big(abs(_median_delta))} — a classic **volatility drag** effect: a return stream with the "
+                f"*same average* annual return as the flat case compounds to a *lower typical* outcome once "
+                f"year-to-year variance is introduced, because losses require proportionally larger gains to "
+                f"recover (a −20% year needs +25% to break even). The p5–p95 spread "
+                f"({_r_fmt_big(_mc['percentiles']['p5'])} – {_r_fmt_big(_mc['percentiles']['p95'])}) shows how wide "
+                f"the range of outcomes is for an identical strategy under realistic equity-market volatility."
+            ))
+
+    with st.expander("ℹ Methodology & Limitations"):
+        st.markdown("""
+- **Monthly compounding**: every rate is converted from an annual figure via `(1 + annual_rate) ** (1/12) - 1`, not a naive `annual_rate / 12`.
+- **Three regions**: pick India (₹, Crore-denominated), United States (\\$), or Europe (€) from the Currency/Region selector. Switching regions resets the capital and contribution fields to sensible defaults for that currency, and rescales the milestone goalposts accordingly (₹1/3/6/10 Cr for India; \\$100K/300K/600K/1M or €100K/300K/600K/1M for US/EU).
+- **Phase 1 contribution is a fixed monthly amount you choose** (defaults to ₹1,00,000 / \\$1,000 / €1,000 depending on region), held flat for the whole phase — not a moving target that increases as the balance grows. The **"↺ Match auto"** button sets it to `initial_capital × ROI ÷ 12`, i.e. exactly matching the lump sum's *initial* annual organic growth — the original "match the growth" baseline math from the spec.
+- **Growth is computed on the pre-contribution balance** each month (an "ordinary annuity" convention — the month's contribution itself doesn't earn that month's growth). This is the standard convention behind the `FV = pmt × [(1+r)^n − 1] / r` annuity formula.
+- **Stress-test mode** draws one random annual return per year from a Normal distribution (mean = target ROI, std = your chosen volatility), applied uniformly across that year's 12 months. This models year-to-year market regime risk, not intra-year noise — a reasonable simplification for a long-horizon SIP-style strategy.
+- **Not investment advice.** This is a pure compound-interest / Monte Carlo mathematics tool, independent of the stock-picking engines elsewhere in this app. Real returns depend on fund selection, expense ratios, taxes, and the actual sequence of market returns.
+        """)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 10 — Portfolio
 # ══════════════════════════════════════════════════════════════════════════════
 
 _CURR_SYM   = {"IN": "Rs ", "US": "$", "EU": "€"}
@@ -1626,7 +2004,7 @@ with strategy_tab_sip:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TAB 9 — Reports
+# TAB 11 — Reports
 # ══════════════════════════════════════════════════════════════════════════════
 
 with T_REP:

@@ -20,6 +20,7 @@ Systematic stock research, signal generation, and strategy backtesting across US
 10. [Configuration](#configuration)
 11. [File Structure](#file-structure)
 12. [Markets Supported](#markets-supported)
+13. [Glossary & Further Reading](#glossary--further-reading)
 
 ---
 
@@ -31,6 +32,7 @@ Mastermind Pro combines two complementary investment frameworks:
 |------|-----------|----------|
 | **Short-Term (ATR-Dynamic)** | Days to weeks | 5-gate technical filter → ATR-sized positions → adaptive trailing stop |
 | **Long-Term (Fundamental + Momentum)** | Months to years | Fundamental Q-score pre-screen → momentum rotation → exit-watch signals |
+| **SIP (Systematic Investment Plan)** | Monthly, ongoing | Fixed monthly budget per region → quality + momentum picks → [regime-reserve](#glossary--further-reading) dip-buying |
 
 Both modes are accessible from either the desktop GUI or the browser UI. All `src/` strategy modules are shared — any config change applies to both interfaces.
 
@@ -84,6 +86,15 @@ Both modes are accessible from either the desktop GUI or the browser UI. All `sr
   3. **Rotation** — dropped out of top-N ranking
 - Year-by-year returns vs benchmark, alpha calculation
 
+### SIP Monthly Plan (Regime-Reserve Strategy)
+- Deploys a fixed monthly budget per region (default $2,000 US / €2,000 EU / ₹20,000 IN) into quality, uptrending stocks
+- Candidate gates: SMA_50 > SMA_200 ([uptrend](#glossary--further-reading)) + Q-score ≥ 55, ranked by 40% Q-score / 60% [momentum](#glossary--further-reading)
+- **C2 "regime reserve"**: 10% of each region's monthly budget is *held back* in cash instead of invested immediately. The reserve accumulates until the region's benchmark index ([S&P 500](#glossary--further-reading), [STOXX 50](#glossary--further-reading), or [Nifty 50](#glossary--further-reading)) closes below its 200-day [simple moving average](#glossary--further-reading) — a common downtrend signal — at which point the *entire* accumulated reserve is deployed in one go, concentrating dry powder at market weakness rather than spreading it evenly
+- Exit rules: SMA breakdown (10 consecutive days below SMA_200), Q-score < 35, or position > 15% of portfolio (trimmed to 10%)
+- Both live cycle (`sip_strategy.py`) and historical simulation (`backtest_sip.py`) implement the identical regime-reserve mechanics, so backtest results are directly comparable to live behaviour
+- State persisted per-run in `portfolio/sip_holdings.json` — tracks holdings, per-region cash reserve, and full cycle history
+- Available as the **SIP Plan** tab in both apps, plus `run_sip.py` / `run_backtest_sip.py` CLI tools
+
 ### Walk-Forward Optimisation
 - Splits history into (train, test) folds
 - Optimises gate parameters on training window, evaluates on out-of-sample test
@@ -116,8 +127,8 @@ Both modes are accessible from either the desktop GUI or the browser UI. All `sr
 
 ```
 InvestmentApp/
-├── app.py                    # Tkinter desktop GUI — 9 tabs
-├── app_web.py                # Streamlit browser app — 9 tabs
+├── app.py                    # Tkinter desktop GUI — 10 tabs
+├── app_web.py                # Streamlit browser app — 11 tabs (browser-only: Compounding Sim)
 ├── .streamlit/
 │   └── config.toml           # Streamlit config (skips email prompt, sets port 8501)
 ├── src/
@@ -143,9 +154,16 @@ InvestmentApp/
 │   ├── monte_carlo.py        # Monte Carlo simulation
 │   ├── post_trade.py         # Post-trade journal enrichment
 │   ├── journal.py            # Excel journal writer (ENTER signals only)
+│   ├── sip_strategy.py       # SIP live cycle — regime-reserve dip-buying (see Strategy Details)
+│   ├── backtest_sip.py       # SIP historical simulation (same regime-reserve mechanics)
+│   ├── compare_sip_variants.py       # A/B/C/D SIP variant comparison (experimental)
+│   ├── compare_sip_exits.py          # SIP exit-rule comparison (experimental)
+│   ├── compare_sip_dip_reserve.py    # Per-position dip-reserve variant (experimental)
 │   ├── run_daily.py          # CLI: daily scan
 │   ├── run_backtest.py       # CLI: short-term backtest
 │   ├── run_backtest_longterm.py  # CLI: long-term backtest
+│   ├── run_sip.py            # CLI: SIP monthly cycle
+│   ├── run_backtest_sip.py   # CLI: SIP backtest
 │   ├── run_montecarlo.py     # CLI: Monte Carlo
 │   ├── run_walkforward.py    # CLI: walk-forward
 │   ├── run_stresstests.py    # CLI: stress tests
@@ -163,7 +181,10 @@ InvestmentApp/
 │   └── EU_ftsemib.csv
 ├── reports/                  # Saved scan and backtest reports
 ├── portfolio/
-│   └── positions.json        # Current open positions (auto-updated after scan)
+│   ├── positions.json        # Legacy combined positions file (desktop app)
+│   ├── st_{US,EU,IN}.json    # Short-term (ATR-Dynamic) open positions, per region
+│   ├── lt_{US,EU,IN}.json    # Long-term (fundamental+momentum) open positions, per region
+│   └── sip_holdings.json     # SIP holdings, per-region cash reserve, and cycle history
 └── requirements.txt
 ```
 
@@ -312,13 +333,29 @@ python src/run_backtest_longterm.py --market IN --slots 10 --rebalance 63 --mome
 python src/run_backtest_longterm.py --no-breakdown --momentum-floor -99
 ```
 
+### CLI — SIP monthly cycle
+```bash
+python src/run_sip.py                       # US + EU + IN, per-region budgets, today
+python src/run_sip.py --markets US          # US only
+python src/run_sip.py --min-q 60            # stricter quality gate
+python src/run_sip.py --dry-run             # preview without saving state
+```
+
+### CLI — SIP backtest
+```bash
+python src/run_backtest_sip.py
+python src/run_backtest_sip.py --markets IN --start 2018-01-01
+python src/run_backtest_sip.py --regime-reserve 0.20   # test a larger reserve
+python src/run_backtest_sip.py --regime-reserve 0      # disable reserve (100% deployed monthly)
+```
+
 > **macOS / Linux:** Replace `python` with `python3` in all CLI commands if `python` is not aliased to Python 3 on your system.
 
 ---
 
 ## Desktop App Tabs
 
-Launch with `python app.py`. Nine tabs across the top.
+Launch with `python app.py`. Ten tabs across the top.
 
 ### Daily Scan
 Select markets (US / EU / IN / All), an as-of date (today or a past date for historical simulation), and optional quality filter. Runs the live signal scan. Output shows ENTER / NEAR / WAIT / SKIP decisions with ATR, gate details, stop levels, and position sizing. Portfolio is auto-saved and journal is updated after each run.
@@ -338,6 +375,13 @@ Two sub-tools in one tab:
 **Screener** — fundamental + technical quality screener. Produces a tiered report (BUY / NEAR / WATCH) with Q-scores, red-flag alerts, and an Exit Watch block per stock.
 
 **Backtest** — quarterly momentum rebalancing backtest with configurable slots, rebalance interval, breakdown exit toggle, and momentum floor.
+
+### SIP Plan
+Monthly Systematic Investment Plan — deploys a fixed per-region budget into quality/momentum picks, holding back a 10% regime reserve that releases in full when a region's benchmark index drops below its 200-day SMA. Two sub-tools:
+
+**Monthly Cycle** — run this month's SIP deployment (or a dry-run preview), showing candidates, allocation, exit signals, and a regime-reserve status readout per region.
+
+**SIP Backtest** — historical simulation of the same regime-reserve logic, with a configurable `regime_reserve_pct`. See [SIP: Regime-Reserve Dip-Buying Strategy](#sip-regime-reserve-dip-buying-strategy) for the mechanics.
 
 ### Portfolio
 Live portfolio monitor — split into **4 regional sub-tabs** so P&L totals are always in a single currency:
@@ -401,6 +445,12 @@ Run historical and/or synthetic scenarios.
 ### Monte Carlo
 Bootstraps a trades CSV from a previous backtest. Shows percentile equity path chart (p5 / p25 / median / p75 / p95) and a metrics row.
 
+### SIP Plan
+Monthly Systematic Investment Plan — two sub-tabs, **📅 Monthly Cycle** and **📊 SIP Backtest**. Configure per-region monthly budget, min Q-score, and universe size; run a dry-run preview or a live cycle. Displays candidates, allocation, exit signals, and a **Regime Reserve** status box showing each region's uptrend/downtrend state and current held-back cash. The backtest sub-tab simulates the same regime-reserve logic over history with a configurable reserve percentage. See [SIP: Regime-Reserve Dip-Buying Strategy](#sip-regime-reserve-dip-buying-strategy) below.
+
+### Compounding Sim
+*(Browser app only.)* A standalone, pure compound-interest simulator — independent of the stock-picking engines in every other tab. Models a two-phase wealth strategy: **Phase 1 "Matching Velocity"** (contribute a fixed monthly amount matching the lump sum's initial organic growth) followed by **Phase 2 "Pure Compounding"** (contributions drop to zero). Configurable initial capital, target ROI, and phase durations. Outputs an Executive Summary table, a milestone tracker (₹1/3/6/10 Cr crossing years), a [Rule of 72](https://en.wikipedia.org/wiki/Rule_of_72) validation, a phase-colour-coded trajectory chart with milestone lines, and a full monthly/yearly ledger (CSV download). **Stress Test mode** runs a Monte Carlo simulation (random annual returns drawn from a Normal distribution around the target ROI) to show the success rate of reaching the goal and the effect of [volatility drag](https://en.wikipedia.org/wiki/Volatility_tax) on the median outcome. Backed by `src/compounding_simulator.py`.
+
 ### Portfolio
 Live portfolio monitor with **4 regional sub-tabs** (Overview / US / EU / IN) — each regional tab shows single-currency totals so P&L figures are always meaningful. Alerts for stop hits and near-stop positions appear above the tabs. Progress-bar Stop Dist % column and per-position expanders. Long-term Screener entries are marked with an `[LT]` badge showing their fundamental grade and exit condition (SMA_200 cross). Prices cached per session; click **Refresh Prices** to update.
 
@@ -419,6 +469,8 @@ All CLI runners live in `src/` and support `--help` for full argument lists.
 | `run_backtest.py` | Short-term backtest | `--market`, `--start`, `--end`, `--equity`, `--no-dynamic` |
 | `run_backtest_longterm.py` | Long-term backtest | `--market`, `--start`, `--end`, `--slots`, `--rebalance`, `--no-breakdown`, `--momentum-floor` |
 | `run_longterm.py` | Long-term screener | `--markets`, `--no-near`, `--min-q`, `--top-n-in` |
+| `run_sip.py` | SIP monthly cycle | `--markets`, `--min-q`, `--top-n`, `--dry-run`, `--refresh-cache` |
+| `run_backtest_sip.py` | SIP backtest | `--markets`, `--start`, `--end`, `--max-picks`, `--top-n`, `--regime-reserve` |
 | `run_walkforward.py` | Walk-forward optimisation | `--market`, `--years`, `--train`, `--test`, `--anchored` |
 | `run_montecarlo.py` | Monte Carlo simulation | `--trades`, `--n-sims`, `--skip-prob` |
 | `run_stresstests.py` | Stress tests | `--market`, `--historical-only`, `--synthetic-only` |
@@ -539,6 +591,33 @@ All runs use 100k initial equity, 0.10% slippage, 0.10% commission, dynamic univ
 
 ---
 
+### SIP: Regime-Reserve Dip-Buying Strategy
+
+A [Systematic Investment Plan](#glossary--further-reading) (SIP) deploys a fixed budget every month regardless of price — the classic argument for this is [dollar-cost averaging](#glossary--further-reading): buying a fixed rupee/dollar/euro amount at regular intervals naturally buys more shares when prices are low and fewer when prices are high, smoothing out entry price over time versus trying to time the market.
+
+This app implements SIP with an added twist, internally called **"C2"** — a **regime reserve**:
+
+1. **Every month**, only 90% of each region's budget (`region_budget × (1 − regime_reserve_pct)`) is deployed into that month's top-ranked candidates. The remaining 10% (`regime_reserve_pct`) is parked as cash in a per-region `dip_reserve` bucket instead of being invested immediately.
+2. **Before each month's deployment**, the region's benchmark index (S&P 500 for US, STOXX 50 for EU, Nifty 50 for IN) is checked against its own [200-day simple moving average](#glossary--further-reading) (SMA_200) — a widely used proxy for whether a market is in a broad uptrend or downtrend.
+3. **If the index closes below its SMA_200** (a downtrend / correction signal), the *entire accumulated reserve* for that region — potentially several months' worth — is released and deployed alongside that month's normal budget. This concentrates extra buying power at a moment of broad market weakness rather than spreading it evenly, on the theory that buying more when the market is cheap (relative to its own trend) improves long-run returns versus pure calendar-based SIP.
+4. **If the index is above its SMA_200** (uptrend intact), the reserve keeps accumulating and only the reduced 90% budget is deployed as normal.
+
+**Candidate selection** (same gates for both the live cycle and backtest):
+- Technical gate: SMA_50 > SMA_200 (uptrend only)
+- Fundamental gate: Q-score ≥ 55 (see [Q-score](#glossary--further-reading) table above)
+- Ranked by composite score: 40% Q-score + 60% [momentum](#glossary--further-reading) (1M / 3M / 6M / 12M periods)
+
+**Exit rules** (checked before each monthly deployment):
+- SMA_50 < SMA_200 for ≥ 10 consecutive trading days → structural breakdown exit
+- Q-score drops below 35 → quality deterioration exit
+- Position exceeds 15% of portfolio value → trimmed to 10%
+
+**Allocation:** equal weight across top picks per region, minimum position size per region (`region_min_alloc`: $200 US / €200 EU / ₹2,000 IN), sector cap at 25% of total portfolio.
+
+**Why this differs from plain SIP:** a pure calendar SIP invests 100% every month unconditionally. This variant sacrifices a small, steady amount of immediate market exposure (the held-back 10%) in exchange for a larger, concentrated purchase precisely when the region's own trend-following signal says prices are depressed relative to trend — a systematic (not discretionary) attempt at "buying the dip" without predicting the bottom. The `src/compare_sip_variants.py` script backtests this against three alternatives (no reserve, a smaller per-position dip-reserve, and a wider-diversification variant) so you can evaluate the trade-off yourself rather than take the design on faith.
+
+---
+
 ## Configuration
 
 All parameters are in `src/config.py`. Key sections:
@@ -583,6 +662,26 @@ JOURNAL = {
 
 The desktop app Settings tab and the browser app sidebar expose the most commonly changed parameters and persist them to `app_settings.json`.
 
+SIP-specific parameters live in `src/sip_strategy.py` (`SIP_CONFIG`), separate from the ATR-Dynamic / Long-Term config above:
+
+```python
+SIP_CONFIG = {
+    "markets":            ["US", "EU", "IN"],
+    "region_budget":      {"US": 2000.0, "EU": 2000.0, "IN": 20000.0},  # local currency, per month
+    "region_min_alloc":   {"US": 200.0, "EU": 200.0, "IN": 2000.0},     # minimum position size
+    "regime_reserve_pct": 0.10,   # 10% held back monthly, released on index < SMA_200
+    "regime_bench":       {"US": "^GSPC", "EU": "^STOXX50E", "IN": "^NSEI"},
+    "min_q_entry":        55.0,   # Q-score gate for new positions
+    "min_q_exit":         35.0,   # Q-score exit trigger
+    "sector_cap":         0.25,   # max 25% of portfolio in one sector
+    "max_position_pct":   0.15,   # trim trigger
+    "trim_to_pct":        0.10,   # trim target
+    "sma_breakdown_days":  10,    # consecutive days below SMA_200 before exit
+    "q_weight":           0.40,   # composite ranking: 40% Q-score
+    "mom_weight":         0.60,   # composite ranking: 60% momentum
+}
+```
+
 ---
 
 ## File Structure
@@ -615,6 +714,62 @@ Price data is cached as Parquet files in `data/` after the first download. Subse
 | Europe | `EU` | EUR | STOXX 50 (^STOXX50E) | Scalable Capital Prime+ |
 
 Universe CSVs cover Nifty 100, Nifty 250, S&P 500, DAX, FTSE 100, and FTSE MIB. Ticker symbols follow Yahoo Finance conventions (`.NS` for NSE, `.DE` / `.PA` / `.L` etc. for European exchanges).
+
+---
+
+## Glossary & Further Reading
+
+Plain-English explanations of the technical, fundamental, and strategy terms used throughout the app and this README, with links to learn more. `Q-score`, `regime reserve`, and `R-multiple` are noted separately as app-specific or non-standard terms.
+
+### Technical indicators (used in gates, entries, exits)
+
+| Term | What it means here | Learn more |
+|------|--------------------|------------|
+| **SMA** (Simple Moving Average) | Average closing price over the last N days (e.g. SMA_50, SMA_200). The app uses SMA_50 vs SMA_200 crossovers to detect uptrends/downtrends. | [Moving average — Wikipedia](https://en.wikipedia.org/wiki/Moving_average) |
+| **RSI** (Relative Strength Index) | Momentum oscillator (0–100) measuring how fast/far price has moved recently. Used as one of the 5 entry gates. | [Relative strength index — Wikipedia](https://en.wikipedia.org/wiki/Relative_strength_index) |
+| **MACD** (Moving Average Convergence/Divergence) | Trend/momentum indicator from the difference between two EMAs; the "histogram" gate checks it's positive before entry. | [MACD — Wikipedia](https://en.wikipedia.org/wiki/MACD) |
+| **ATR** (Average True Range) | Average daily price range over N days — a volatility measure. Used to size positions and set trailing stops (e.g. "3.5× ATR"). | [Average true range — Wikipedia](https://en.wikipedia.org/wiki/Average_true_range) |
+| **Bollinger Bands** | Volatility bands plotted N standard deviations above/below a moving average; referenced by some indicator calculations in `indicators.py`. | [Bollinger Bands — Wikipedia](https://en.wikipedia.org/wiki/Bollinger_Bands) |
+| **Trailing stop** | A stop-loss that moves up with the price peak but never moves down — locks in gains while giving a position room to run. | [Order types (trailing stop) — Wikipedia](https://en.wikipedia.org/wiki/Order_(exchange)) |
+| **Circuit breaker / drawdown band** | A rule that reduces or halts new entries after the portfolio (or market) falls a certain amount — this app's is currently disabled (`DRAWDOWN_BANDS: []`). Named after the exchange-level version. | [Trading curb — Wikipedia](https://en.wikipedia.org/wiki/Trading_curb) |
+
+### Performance & risk metrics (backtest, Monte Carlo, walk-forward)
+
+| Term | What it means here | Learn more |
+|------|--------------------|------------|
+| **CAGR** (Compound Annual Growth Rate) | The single steady annual growth rate that would take starting equity to ending equity over the period — the headline return figure in every backtest report. | [Compound annual growth rate — Wikipedia](https://en.wikipedia.org/wiki/Compound_annual_growth_rate) |
+| **Max Drawdown** | The largest peak-to-trough decline in equity during the backtest — the worst-case loss an investor would have experienced. | [Drawdown — Wikipedia](https://en.wikipedia.org/wiki/Drawdown_(economics)) |
+| **Sharpe ratio** | Return earned per unit of total risk (volatility). Higher is better; a common way to compare strategies with different volatility. | [Sharpe ratio — Wikipedia](https://en.wikipedia.org/wiki/Sharpe_ratio) |
+| **Sortino ratio** | Like Sharpe, but only penalises *downside* volatility, not upside swings — arguably more relevant for judging strategies that aim to avoid losses. | [Sortino ratio — Wikipedia](https://en.wikipedia.org/wiki/Sortino_ratio) |
+| **Alpha** | Excess return of the strategy vs. its benchmark (Nifty 50 / S&P 500 / STOXX 50) over the same period — the value the strategy added (or subtracted) beyond just tracking the market. | [Alpha (finance) — Wikipedia](https://en.wikipedia.org/wiki/Alpha_(finance)) |
+| **XIRR** | Extended Internal Rate of Return — the annualised return of a series of cash flows that happen on *irregular* dates (exactly the SIP's monthly-but-not-fixed-interval deployments). Excel/Google Sheets' `XIRR()` function implements the same underlying IRR math. | [Internal rate of return — Wikipedia](https://en.wikipedia.org/wiki/Internal_rate_of_return) |
+| **R-multiple** | A trade's profit/loss expressed as a multiple of the amount originally risked (1R = the entry-to-stop-loss distance). Shown in the Portfolio tab as `R×`. Not a Wikipedia-indexed term — popularised by trader Van K. Tharp. | [R-Multiple explainer — TraderSync](https://tradersync.com/r-multiple/) |
+| **Monte Carlo simulation** | Re-running a backtest's trade sequence thousands of times with randomised ordering/skipping to see the *range* of possible outcomes, not just the one historical path. | [Monte Carlo method — Wikipedia](https://en.wikipedia.org/wiki/Monte_Carlo_method) |
+| **Bootstrap resampling** | The specific randomisation technique Monte Carlo uses here — drawing trades with replacement from the historical trade log to build alternate equity paths. | [Bootstrapping (statistics) — Wikipedia](https://en.wikipedia.org/wiki/Bootstrapping_(statistics)) |
+| **Walk-forward optimisation** | Splitting history into a training window (to pick parameters) and a following test window (to check they still work out-of-sample) — repeated across rolling/anchored periods to catch over-fitting. | [Walk forward optimization — Wikipedia](https://en.wikipedia.org/wiki/Walk_forward_optimization) |
+| **Backtesting** | Simulating a strategy's rules against historical price data to estimate how it would have performed — the basis of every "Backtest" tab in this app. | [Backtesting — Wikipedia](https://en.wikipedia.org/wiki/Backtesting) |
+
+### Fundamental ratios (Long-Term Screener & SIP Q-score)
+
+| Term | What it means here | Learn more |
+|------|--------------------|------------|
+| **ROE** (Return on Equity) | Net income ÷ shareholder equity — how efficiently a company turns invested capital into profit. Largest single weight (20%) in the Q-score. | [Return on equity — Wikipedia](https://en.wikipedia.org/wiki/Return_on_equity) |
+| **D/E ratio** (Debt-to-Equity) | Total debt ÷ shareholder equity — balance-sheet leverage/safety. Lower is generally safer. | [Debt-to-equity ratio — Wikipedia](https://en.wikipedia.org/wiki/Debt-to-equity_ratio) |
+| **Operating margin** | Operating income ÷ revenue — how much profit survives after core operating costs, before interest/tax. Proxy for competitive "moat". | [Operating margin — Wikipedia](https://en.wikipedia.org/wiki/Operating_margin) |
+| **FCF yield** (Free Cash Flow Yield) | Free cash flow ÷ market value — real cash generation relative to price, harder to manipulate than reported earnings. | [Free cash flow — Wikipedia](https://en.wikipedia.org/wiki/Free_cash_flow) |
+| **PEG ratio** | P/E ratio ÷ earnings growth rate — a valuation check that accounts for how fast a company is growing, not just its raw P/E. | [PEG ratio — Wikipedia](https://en.wikipedia.org/wiki/PEG_ratio) |
+| **P/B ratio** (Price-to-Book) | Market price ÷ book value per share — how much investors pay relative to net assets. | [P/B ratio — Wikipedia](https://en.wikipedia.org/wiki/P/B_ratio) |
+| **Net margin** | Net profit ÷ revenue — bottom-line profitability after all expenses, interest, and tax. | [Profit margin — Wikipedia](https://en.wikipedia.org/wiki/Profit_margin) |
+| **Q-score** | This app's own 0–100 composite of the nine metrics above (see [Strategy Details](#strategy-details)) — not a term you'll find externally; it's specific to `fundamental.py`. | *(app-specific — no external reference)* |
+
+### Strategy concepts
+
+| Term | What it means here | Learn more |
+|------|--------------------|------------|
+| **Momentum (investing)** | The tendency for assets that have performed well recently to keep performing well short-term. Drives the ranking/rotation logic in both the Long-Term and SIP strategies. | [Momentum investing — Wikipedia](https://en.wikipedia.org/wiki/Momentum_investing) |
+| **SIP** (Systematic Investment Plan) | Investing a fixed amount at regular intervals (here: monthly, per region) regardless of price, rather than timing the market with a lump sum. | [Systematic investment plan — Wikipedia](https://en.wikipedia.org/wiki/Systematic_investment_plan) |
+| **Dollar-cost averaging** | The underlying rationale for SIP investing — fixed periodic purchases buy more shares when prices are low and fewer when high, smoothing average entry cost over time. | [Dollar cost averaging — Wikipedia](https://en.wikipedia.org/wiki/Dollar_cost_averaging) |
+| **Regime reserve ("C2")** | This app's variant on plain SIP: hold back part of the monthly budget and release it in bulk when a region's index falls into a downtrend (below its SMA_200). See [SIP: Regime-Reserve Dip-Buying Strategy](#sip-regime-reserve-dip-buying-strategy) for the full mechanics. Not an industry-standard term — coined internally for this project. | *(app-specific — no external reference)* |
 
 ---
 

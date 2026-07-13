@@ -16,9 +16,10 @@ Practical step-by-step recipes for every workflow. Read the README for reference
 8. [Checking Portfolio Health](#8-checking-portfolio-health)
 9. [Running a Backtest](#9-running-a-backtest)
 10. [Long-Term Screener](#10-long-term-screener)
-11. [Setting Up the Journal](#11-setting-up-the-journal)
-12. [Changing Markets or Universe Size](#12-changing-markets-or-universe-size)
-13. [Troubleshooting](#13-troubleshooting)
+11. [Running the SIP Monthly Plan](#11-running-the-sip-monthly-plan)
+12. [Setting Up the Journal](#12-setting-up-the-journal)
+13. [Changing Markets or Universe Size](#13-changing-markets-or-universe-size)
+14. [Troubleshooting](#14-troubleshooting)
 
 ---
 
@@ -545,7 +546,71 @@ The Exit Watch block is computed fresh each time you run the screener. Review it
 
 ---
 
-## 11. Setting Up the Journal
+## 11. Running the SIP Monthly Plan
+
+A Systematic Investment Plan (SIP) — invest a fixed amount every month regardless of price — into quality, uptrending stocks per region. This app adds a **regime reserve**: 10% of each month's budget is held back and released in bulk when that region's benchmark index falls below its 200-day trend line. See the README's [SIP: Regime-Reserve Dip-Buying Strategy](README.md#sip-regime-reserve-dip-buying-strategy) for the full mechanics, and the [Glossary](README.md#glossary--further-reading) if any term below is unfamiliar.
+
+### Run a monthly cycle
+
+**Desktop:** SIP Plan tab → Monthly Cycle → set budgets/markets → Run Monthly SIP Cycle
+
+**Browser:** SIP Plan tab → 📅 Monthly Cycle sub-tab
+
+**CLI:**
+```bash
+python src/run_sip.py                    # US + EU + IN, default per-region budgets
+python src/run_sip.py --markets US       # US only
+python src/run_sip.py --dry-run          # preview — does not save state
+```
+
+Always try `--dry-run` (or tick "Dry run" in the browser UI) first when changing budgets or the Q-score gate, so you can see the candidate list and regime-reserve status before committing real state to `portfolio/sip_holdings.json`.
+
+### Reading the output
+
+```
+REGIME RESERVE STATUS
+--------------------------------------------
+US: uptrend — reserve held  (reserve now: $200)
+EU: REGIME DOWN — released €1,000 reserve  (reserve now: €0)
+IN: no benchmark — reserve held  (reserve now: ₹2,000)
+
+BUYS THIS MONTH:
+  BUY MSFT         $1,800  (Q=82  Mom=+6.2%  [US])
+```
+
+- **"uptrend — reserve held"** — the region's benchmark index is above its SMA_200; this month's reserve slice just adds to the pile, nothing extra deployed.
+- **"REGIME DOWN — released …"** — the index closed below its SMA_200; every dollar/euro/rupee accumulated in the reserve so far was added to this month's buys.
+- **"no benchmark — reserve held"** — benchmark price history wasn't available this run (e.g. a fetch failure); the reserve just carries over untouched.
+- **BUYS THIS MONTH** — the actual picks and amounts deployed, same format as the Daily Scan / Long-Term reports.
+
+### Running a SIP backtest
+
+**Desktop:** SIP Plan tab → SIP Backtest
+
+**Browser:** SIP Plan tab → 📊 SIP Backtest sub-tab
+
+**CLI:**
+```bash
+python src/run_backtest_sip.py --markets US,EU,IN --start 2018-01-01
+python src/run_backtest_sip.py --regime-reserve 0       # compare against plain SIP (no reserve)
+python src/run_backtest_sip.py --regime-reserve 0.20    # try a bigger reserve
+```
+
+The report's `idle_reserve_at_end` figure shows how much of the reserve was never released by the end of the backtest window — if that number is large relative to total deployed, the reserve threshold may be too conservative for that period (the index never dipped below its SMA_200 for long).
+
+### Comparing SIP variants
+
+`src/compare_sip_variants.py` is an experimental script that runs four variants back-to-back on the same data — no reserve, a small per-position dip-reserve, the regime reserve described above, and a wider-diversification variant — and prints their XIRR side by side:
+
+```bash
+python src/compare_sip_variants.py --top-n 20 --start 2016-01-01
+```
+
+Use this before changing `regime_reserve_pct` in production — it's the fastest way to see whether a change actually helps for your market and date range, rather than assuming the theory holds.
+
+---
+
+## 12. Setting Up the Journal
 
 The journal writes ENTER signals to an Excel file after each daily scan.
 
@@ -607,7 +672,7 @@ Only **ENTER** signals are logged (one row per ticker per day). If you run the s
 
 ---
 
-## 12. Changing Markets or Universe Size
+## 13. Changing Markets or Universe Size
 
 ### Switch to India-only scanning
 
@@ -674,7 +739,7 @@ RISK    = {"MAX_POSITION_SIZE_PCT": 0.20}
 
 ---
 
-## 13. Troubleshooting
+## 14. Troubleshooting
 
 ### Scan takes very long
 
