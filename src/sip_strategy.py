@@ -46,6 +46,9 @@ SIP_CONFIG: dict = {
     "region_symbol":      {"US": "$",   "EU": "€",   "IN": "₹"},
     # Min position size per region in local currency
     "region_min_alloc":   {"US": 200.0, "EU": 200.0, "IN": 2000.0},
+    # Regime reserve (C2): hold back 10% each month; deploy when regional index < SMA_200
+    "regime_reserve_pct": 0.10,
+    "regime_bench":       {"US": "^GSPC", "EU": "^STOXX50E", "IN": "^NSEI"},
     "min_q_entry":        55.0,
     "min_q_exit":         35.0,
     "max_picks":          5,         # fallback
@@ -65,12 +68,17 @@ SIP_CONFIG: dict = {
 def load_sip_holdings() -> dict:
     if SIP_HOLDINGS_FILE.exists():
         try:
-            return json.loads(SIP_HOLDINGS_FILE.read_text(encoding="utf-8"))
+            state = json.loads(SIP_HOLDINGS_FILE.read_text(encoding="utf-8"))
+            # Migrate: add dip_reserve field if missing from older saves
+            if "dip_reserve" not in state:
+                state["dip_reserve"] = {m: 0.0 for m in SIP_CONFIG["markets"]}
+            return state
         except Exception:
             pass
     return {
         "holdings":       {},
-        "monthly_budget": SIP_CONFIG["monthly_budget"],
+        "region_budget":  SIP_CONFIG["region_budget"],
+        "dip_reserve":    {m: 0.0 for m in SIP_CONFIG["markets"]},
         "total_deployed": 0.0,
         "start_date":     datetime.now().strftime("%Y-%m-%d"),
         "cycles":         [],
@@ -383,56 +391,130 @@ def format_report(
     return "\n".join(lines)
 
 
+def _sma200_of_index(bench_df, as_of=None) -> tuple[float, float]:
+    """Return (close, sma200) for the index. Both NaN if < 200 rows."""
+    sub = bench_df if as_of is None else bench_df.loc[:as_of]
+    if len(sub) < 200:
+        return float("nan"), float("nan")
+    close  = float(sub["Close"].iloc[-1])
+    sma200 = float(sub["Close"].iloc[-200:].mean())
+    return close, sma200
+
+
 def run_sip_cycle(
     data_map: dict,
     q_scores: dict,
     current_prices: dict | None = None,
     override_budget: float | None = None,
     override_min_q: float | None = None,
+    benchmark_dfs: dict | None = None,   # {mkt: DataFrame} for regime check
     dry_run: bool = False,
 ) -> dict:
     """
     Full monthly SIP cycle: check exits → screen candidates → allocate → report.
 
-    Returns {candidates, allocation, exits, report_text, state, cycle_date}.
+    Implements C2 regime-reserve strategy: 10% of each region's budget is held
+    back each month and deployed in bulk when the regional index drops below its
+    SMA_200 (market downtrend signal).
+
+    Returns {candidates, allocation, exits, report_text, state, cycle_date,
+             regime_status, dip_reserve}.
     If dry_run=True, portfolio state is not written to disk.
     """
+    cfg    = SIP_CONFIG
     state  = load_sip_holdings()
-    budget = override_budget or state.get("monthly_budget", SIP_CONFIG["monthly_budget"])
     held   = state.get("holdings", {})
+    markets = cfg["markets"]
 
+    rb          = cfg["region_budget"]
+    reserve_pct = cfg["regime_reserve_pct"]
+    rma         = cfg["region_min_alloc"]
+
+    # Per-region cash buckets
+    dip_reserve: dict[str, float] = state.get("dip_reserve", {m: 0.0 for m in markets})
+
+    # Compute current portfolio value for exit checks
     total_value = sum(
         h.get("shares", 0) * ((current_prices or {}).get(t) or h.get("avg_cost", 0))
         for t, h in held.items()
     )
 
-    exits      = check_exits(held, data_map, q_scores, current_prices, total_value)
+    # ── Check exits (across all regions)
+    exits = check_exits(held, data_map, q_scores, current_prices, total_value)
+
+    # ── Regime check per region: release reserve if index < SMA_200
+    regime_status: dict[str, str] = {}
+    regime_released: dict[str, float] = {}
+    for mkt in markets:
+        bdf = (benchmark_dfs or {}).get(mkt)
+        if bdf is not None and dip_reserve.get(mkt, 0.0) > 0:
+            idx_close, idx_sma200 = _sma200_of_index(bdf)
+            if not math.isnan(idx_close) and idx_close < idx_sma200:
+                regime_released[mkt] = dip_reserve[mkt]
+                dip_reserve[mkt]     = 0.0
+                regime_status[mkt]   = f"REGIME DOWN — released {cfg['region_symbol'].get(mkt,'')}{regime_released[mkt]:,.0f} reserve"
+            else:
+                regime_status[mkt] = "uptrend — reserve held"
+        elif bdf is None:
+            regime_status[mkt] = "no benchmark — reserve held"
+        else:
+            regime_status[mkt] = "reserve empty"
+
+    # ── Screen and allocate per region
+    allocation: dict[str, float] = {}
+    region_deploy: dict[str, float] = {}
+
+    for mkt in markets:
+        bgt       = override_budget or rb.get(mkt, 2000.0)
+        to_invest = bgt * (1.0 - reserve_pct)
+        released  = regime_released.get(mkt, 0.0)
+        deploy    = to_invest + released   # released reserve adds to this month's deployment
+
+        dip_reserve[mkt] = dip_reserve.get(mkt, 0.0) + bgt * reserve_pct  # accumulate new reserve
+        region_deploy[mkt] = deploy
+
+        mkt_candidates = screen_candidates(data_map, q_scores, markets=[mkt], min_q=override_min_q)
+        mkt_held       = {t: h for t, h in held.items() if h.get("market") == mkt}
+        mkt_val        = sum(
+            h.get("shares", 0) * ((current_prices or {}).get(t) or h.get("avg_cost", 0))
+            for t, h in mkt_held.items()
+        )
+        mkt_alloc = allocate_budget(
+            mkt_candidates, deploy, mkt_held, mkt_val,
+            min_alloc=rma.get(mkt, 200.0),
+        )
+        allocation.update(mkt_alloc)
+
     candidates = screen_candidates(data_map, q_scores, min_q=override_min_q)
-    allocation = allocate_budget(candidates, budget, held, total_value)
 
     cycle_date     = datetime.now().strftime("%Y-%m-%d")
     total_deployed = state.get("total_deployed", 0.0) + sum(allocation.values())
 
     report = format_report(
         cycle_date, candidates, allocation, exits,
-        held, budget, total_deployed,
+        held, sum(rb.values()), total_deployed,
     )
 
     if not dry_run:
         state["total_deployed"] = total_deployed
+        state["dip_reserve"]    = dip_reserve
         state["cycles"].append({
-            "date":   cycle_date,
-            "buys":   allocation,
-            "exits":  [e["ticker"] for e in exits if e["action"] == "EXIT"],
-            "budget": budget,
+            "date":            cycle_date,
+            "buys":            allocation,
+            "exits":           [e["ticker"] for e in exits if e["action"] == "EXIT"],
+            "region_deploy":   region_deploy,
+            "regime_released": regime_released,
         })
         save_sip_holdings(state)
 
     return {
-        "candidates":  candidates,
-        "allocation":  allocation,
-        "exits":       exits,
-        "report_text": report,
-        "state":       state,
-        "cycle_date":  cycle_date,
+        "candidates":      candidates,
+        "allocation":      allocation,
+        "exits":           exits,
+        "report_text":     report,
+        "state":           state,
+        "cycle_date":      cycle_date,
+        "regime_status":   regime_status,
+        "dip_reserve":     dip_reserve,
+        "region_deploy":   region_deploy,
     }

@@ -73,5 +73,41 @@
     "is_high_vol": true,
     "cost": 23878.35,
     "days_held": 0
+  },
+  {
+    "ticker": "HLMA.L",
+    "market": "EU",
+    "sector": "Unknown",
+    "entry_price": 4878.0,
+    "entry_date": "2026-06-05",
+    "shares": 4,
+    "stop_loss": 4527.756730388017,
+    "stop_loss_initial": 4527.756730388017,
+    "trail_mult": 4.5,
+    "peak_price": 4878.0,
+    "atr_at_entry": 116.74775653732772,
+    "risk_pct": 0.03,
+    "regime": "High Vol",
+    "is_high_vol": true,
+    "cost": 19531.51,
+    "days_held": 0
+  },
+  {
+    "ticker": "AI.PA",
+    "market": "EU",
+    "sector": "Unknown",
+    "entry_price": 181.67999267578125,
+    "entry_date": "2026-06-05",
+    "shares": 131,
+    "stop_loss": 175.23313769519348,
+    "stop_loss_initial": 175.23313769519348,
+    "trail_mult": 7.0,
+    "peak_price": 182.36000061035156,
+    "atr_at_entry": 3.223427490293883,
+    "risk_pct": 0.05,
+    "regime": "Normal",
+    "is_high_vol": false,
+    "cost": 23823.88,
+    "days_held": 0
   }
 ]

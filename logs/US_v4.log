@@ -1,0 +1,40 @@
+  [universe] Loaded 200 tickers across ['US']
+Fetching 200 tickers (12 yrs of history)...
+  Cache: 200/200 served from disk
+  Data: 200/200 ok, 0 failed []
+Computing indicators...
+Backtesting 2621 days [2016-01-04 to 2026-06-05]
+
+[1m[94m====================================================================[0m
+[1m[97m  MASTERMIND PRO -- BACKTEST  (US_v4_dynamic_high10_risk9)[0m
+[1m[94m====================================================================[0m
+  Period:  2016-01-01 to 2026-06-06
+  Capital: 100,000  |  Slippage: 0.10%  Commission: 0.10%
+
+  Final equity                   [97m  268,596.37[0m
+  Total return                   [92m   +168.60%[0m
+  CAGR                           [92m     +9.95%[0m
+  Max drawdown                   [91m    -28.42%[0m
+  Sharpe ratio                   [97m     0.688[0m
+  Sortino ratio                  [97m     0.885[0m
+
+  Total trades                   [97m       455[0m
+  Win rate                       [97m      35.2%[0m
+  Avg R-multiple                 [97m    +0.324R[0m
+  Profit factor                  [97m     1.382[0m
+  Ann. volatility                [97m     15.59%[0m
+
+[1m[94m====================================================================[0m
+[1m[97m  INDEX BENCHMARK COMPARISON[0m
+[1m[94m====================================================================[0m
+  Index              CAGR    MaxDD   Sharpe    Alpha
+  --------------------------------------------------
+  [96mS&P 500       [0m  [92m +13.29%[0m  [91m -33.92%[0m     0.786  [91m  -3.34%[0m
+
+  [93mAlpha = Strategy CAGR minus Index CAGR (same period)[0m
+  [93mNote: multi-market result mixes USD/EUR/INR vs single-currency indices[0m
+
+[1m[94m====================================================================[0m
+  [93mDISCLAIMER: This system is for RESEARCH and PAPER TRADING only. Output is NOT financial advice. Do NOT deploy live capital without independent validation, regulatory compliance review, and full risk disclosure. Past simulated performance does not guarantee future results.[0m
+[1m[94m====================================================================[0m
+

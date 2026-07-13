@@ -1,0 +1,44 @@
+{
+  "holdings": {},
+  "region_budget": {
+    "US": 2000.0,
+    "EU": 2000.0,
+    "IN": 20000.0
+  },
+  "dip_reserve": {
+    "US": 200.0,
+    "EU": 200.0,
+    "IN": 2000.0
+  },
+  "total_deployed": 21600.0,
+  "start_date": "2026-06-07",
+  "cycles": [
+    {
+      "date": "2026-06-07",
+      "buys": {
+        "AMAT": 360.0,
+        "ANET": 360.0,
+        "APA": 360.0,
+        "GOOGL": 360.0,
+        "GOOG": 360.0,
+        "FRES.L": 360.0,
+        "ANTO.L": 360.0,
+        "FCIT.L": 360.0,
+        "EDV.L": 360.0,
+        "AAF.L": 360.0,
+        "GVT&D.NS": 3600.0,
+        "ADANIPOWER.NS": 3600.0,
+        "BSE.NS": 3600.0,
+        "MAHABANK.NS": 3600.0,
+        "AUBANK.NS": 3600.0
+      },
+      "exits": [],
+      "region_deploy": {
+        "US": 1800.0,
+        "EU": 1800.0,
+        "IN": 18000.0
+      },
+      "regime_released": {}
+    }
+  ]
+}

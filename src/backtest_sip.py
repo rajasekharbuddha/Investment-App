@@ -37,6 +37,7 @@ import pandas as pd
 
 BENCHMARK_TICKER = {"US": "^GSPC", "EU": "^STOXX50E", "IN": "^NSEI"}
 _DEFAULT_PERIODS  = [21, 63, 126, 252]   # 1M / 3M / 6M / 12M
+_DEFAULT_REGIME_RESERVE = 0.10           # C2 variant: 10% held back, deployed on index < SMA_200
 
 
 # ── XIRR ─────────────────────────────────────────────────────────────────────
@@ -109,6 +110,16 @@ def _get_market(ticker: str) -> str:
     return get_market(ticker)
 
 
+def _sma200_of_index(bench_df: pd.DataFrame, as_of) -> tuple[float, float]:
+    """Return (close, sma200) for the index as of `as_of`. Both NaN if < 200 rows."""
+    sub = bench_df.loc[:as_of]
+    if len(sub) < 200:
+        return float("nan"), float("nan")
+    close  = float(sub["Close"].iloc[-1])
+    sma200 = float(sub["Close"].iloc[-200:].mean())
+    return close, sma200
+
+
 def _max_drawdown(nav_series: list[float]) -> float:
     if not nav_series:
         return 0.0
@@ -167,20 +178,21 @@ def _select_picks(
 # ── Core backtest ─────────────────────────────────────────────────────────────
 
 def run_sip_backtest(
-    data_map:           dict,
-    benchmark_dfs:      dict | None      = None,   # {mkt: DataFrame} per-region benchmarks
-    benchmark_df:       Optional[pd.DataFrame] = None,  # legacy — used as US fallback
-    start:              str              = "2016-01-01",
-    end:                Optional[str]    = None,
-    monthly_budget:     float            = 2000.0,  # fallback if region_budget not given
-    region_budget:      dict | None      = None,    # {"US": 2000, "EU": 2000, "IN": 20000} local currency
-    region_min_alloc:   dict | None      = None,    # {"US": 200, "EU": 200, "IN": 2000}
-    max_picks:          int              = 5,
-    commission:         float            = 0.001,
-    slippage:           float            = 0.001,
-    sma_breakdown_days: int              = 10,
-    momentum_periods:   Optional[list]   = None,
-    markets:            Optional[list]   = None,
+    data_map:             dict,
+    benchmark_dfs:        dict | None      = None,   # {mkt: DataFrame} per-region benchmarks
+    benchmark_df:         Optional[pd.DataFrame] = None,  # legacy — used as US fallback
+    start:                str              = "2016-01-01",
+    end:                  Optional[str]    = None,
+    monthly_budget:       float            = 2000.0,  # fallback if region_budget not given
+    region_budget:        dict | None      = None,    # {"US": 2000, "EU": 2000, "IN": 20000} local currency
+    region_min_alloc:     dict | None      = None,    # {"US": 200, "EU": 200, "IN": 2000}
+    max_picks:            int              = 5,
+    commission:           float            = 0.001,
+    slippage:             float            = 0.001,
+    sma_breakdown_days:   int              = 10,
+    momentum_periods:     Optional[list]   = None,
+    markets:              Optional[list]   = None,
+    regime_reserve_pct:   float            = _DEFAULT_REGIME_RESERVE,
 ) -> dict:
     """
     Simulate the monthly SIP strategy over a historical period.
@@ -228,6 +240,7 @@ def run_sip_backtest(
     # ── Per-region state (all values in local currency) ───────────────────────
     region_portfolio: dict[str, dict]  = {m: {} for m in active_mkts}
     region_cash:      dict[str, float] = {m: 0.0 for m in active_mkts}
+    dip_reserve:      dict[str, float] = {m: 0.0 for m in active_mkts}
     region_invested:  dict[str, float] = {m: 0.0 for m in active_mkts}
     region_cfs:       dict[str, list]  = {m: [] for m in active_mkts}
     region_nav_hist:  dict[str, list]  = {m: [] for m in active_mkts}
@@ -238,18 +251,22 @@ def run_sip_backtest(
 
     all_trades:  list[dict] = []
     nav_history: list[dict] = []   # combined — nav is sum of local-currency navs (mixed, indicative only)
+    regime_deploy_events = 0
 
     for cycle_date in monthly_dates:
         py_date   = cycle_date.date()
         cycle_nav = 0.0
 
         for mkt in active_mkts:
-            bgt = rb[mkt]
-            region_cash[mkt]     += bgt
+            bgt        = rb[mkt]
+            to_invest  = bgt * (1.0 - regime_reserve_pct)
+            to_reserve = bgt * regime_reserve_pct
+            region_cash[mkt]     += to_invest
+            dip_reserve[mkt]     += to_reserve
             region_invested[mkt] += bgt
             region_cfs[mkt].append((-bgt, py_date))
 
-            # Per-region benchmark: deploy same local-currency budget
+            # Per-region benchmark: deploy same local-currency budget (no reserve held)
             bdf = _bench_map.get(mkt)
             if bdf is not None:
                 bp = _price_at(bdf, cycle_date, offset=cost)
@@ -282,12 +299,27 @@ def run_sip_backtest(
                         })
                     del port[ticker]
 
+            # ── Regime check: release reserve when index < SMA_200
+            regime_triggered = False
+            if regime_reserve_pct > 0 and dip_reserve[mkt] > 0:
+                bdf = _bench_map.get(mkt)
+                if bdf is not None:
+                    idx_close, idx_sma200 = _sma200_of_index(bdf, cycle_date)
+                    if not math.isnan(idx_close) and idx_close < idx_sma200:
+                        region_cash[mkt] += dip_reserve[mkt]
+                        dip_reserve[mkt]  = 0.0
+                        regime_triggered   = True
+                        regime_deploy_events += 1
+
             # ── Select picks
             picks = _select_picks(data_map, tickers, cycle_date, max_picks,
                                   sma_breakdown_days, port, periods)
 
-            # ── Deploy this month's budget (not accumulated cash)
-            deploy = min(bgt, region_cash[mkt])
+            # ── Deploy: all cash on regime trigger; normal 90% slice otherwise
+            if regime_triggered:
+                deploy = region_cash[mkt]
+            else:
+                deploy = min(rb[mkt] * (1.0 - regime_reserve_pct), region_cash[mkt])
             if picks and deploy >= _rma:
                 n = min(len(picks), max(1, int(deploy / _rma)))
                 picks     = picks[:n]
@@ -320,8 +352,8 @@ def run_sip_backtest(
                         "amount": round(alloc_per, 2),
                     })
 
-            # ── Regional NAV in local currency
-            region_nav = region_cash[mkt]
+            # ── Regional NAV in local currency (includes dip reserve as cash-equivalent)
+            region_nav = region_cash[mkt] + dip_reserve[mkt]
             for ticker, pos in port.items():
                 df  = data_map.get(ticker)
                 sub = df.loc[:cycle_date] if df is not None else None
@@ -332,6 +364,7 @@ def run_sip_backtest(
                 "date":      str(py_date),
                 "nav":       round(region_nav, 2),
                 "cash":      round(region_cash[mkt], 2),
+                "reserve":   round(dip_reserve[mkt], 2),
                 "positions": len(port),
                 "invested":  round(region_invested[mkt], 2),
                 "currency":  _CURRENCY[mkt],
@@ -353,7 +386,7 @@ def run_sip_backtest(
 
     for mkt in active_mkts:
         port  = region_portfolio[mkt]
-        r_nav = region_cash[mkt]
+        r_nav = region_cash[mkt] + dip_reserve[mkt]
         for ticker, pos in port.items():
             df  = data_map.get(ticker)
             sub = df.loc[:end_dt] if df is not None else None
@@ -389,6 +422,8 @@ def run_sip_backtest(
         m: _year_returns(region_nav_hist[m], rb[m]) for m in active_mkts
     }
 
+    idle_reserve_at_end = {m: round(dip_reserve[m], 2) for m in active_mkts}
+
     report = _format_report(
         start=start, end=str(end_dt.date()),
         markets=active_mkts,
@@ -406,6 +441,9 @@ def run_sip_backtest(
         region_symbol=_SYMBOL,
         region_currency=_CURRENCY,
         region_year_returns=region_year_returns,
+        regime_reserve_pct=regime_reserve_pct,
+        regime_deploy_events=regime_deploy_events,
+        idle_reserve_at_end=idle_reserve_at_end,
     )
 
     return {
@@ -426,6 +464,9 @@ def run_sip_backtest(
         "markets":               active_mkts,
         "region_currency":       _CURRENCY,
         "region_symbol":         _SYMBOL,
+        "regime_reserve_pct":    regime_reserve_pct,
+        "regime_deploy_events":  regime_deploy_events,
+        "idle_reserve_at_end":   idle_reserve_at_end,
     }
 
 
@@ -483,6 +524,9 @@ def _format_report(
     region_symbol: dict,
     region_currency: dict,
     region_year_returns: dict,
+    regime_reserve_pct: float = 0.0,
+    regime_deploy_events: int = 0,
+    idle_reserve_at_end: dict | None = None,
 ) -> str:
     sep  = "=" * 68
     dash = "-" * 44
@@ -492,13 +536,19 @@ def _format_report(
         f"{region_symbol.get(m,'')}{region_budget.get(m,0):,.0f}/mo {region_currency.get(m,'')}"
         for m in markets
     )
+    regime_str = (
+        f"  Regime reserve: {regime_reserve_pct*100:.0f}% held back/mo, "
+        f"deployed {regime_deploy_events}× on index < SMA_200"
+        if regime_reserve_pct > 0 else "  Regime reserve: disabled (100% deployed each month)"
+    )
     lines = [
         "",
         sep,
-        "  MASTERMIND PRO — SIP BACKTEST",
+        "  MASTERMIND PRO — SIP BACKTEST (Regime-Reserve C2 Strategy)",
         f"  Markets  : {', '.join(markets)}  |  Universe: {n_tickers} tickers",
         f"  Period   : {start}  to  {end}",
         f"  Budget   : {budget_str}",
+        regime_str,
         f"  Cycles   : {n_cycles}  |  Max DD: {max_dd*100:+.2f}%  |  Avg positions: {avg_positions:.1f}",
         sep,
         "",

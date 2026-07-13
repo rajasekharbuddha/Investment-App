@@ -917,6 +917,18 @@ with T_SIP:
                             except Exception:
                                 _q_scores[_t] = 0.0
 
+                    _prog.progress(95, text="Fetching regime benchmarks…")
+                    _bench_tickers = {"US": "^GSPC", "EU": "^STOXX50E", "IN": "^NSEI"}
+                    _bench_dfs_cyc: dict = {}
+                    for _bm, _bt in _bench_tickers.items():
+                        if _bm in sip_markets_sel:
+                            try:
+                                _bdf = fetch_history(_bt, years=1)
+                                if _bdf is not None:
+                                    _bench_dfs_cyc[_bm] = _bdf
+                            except Exception:
+                                pass
+
                     _prog.progress(100, text="Running SIP cycle…")
                     with st.spinner("Running SIP selection…"):
                         from sip_strategy import run_sip_cycle, SIP_CONFIG as _SC
@@ -924,11 +936,25 @@ with T_SIP:
                             data_map=_data_map,
                             q_scores=_q_scores,
                             override_min_q=float(sip_min_q),
+                            benchmark_dfs=_bench_dfs_cyc,
                             dry_run=bool(sip_dry),
                         )
 
                     _prog.empty()
                     st.success(f"Cycle complete — {datetime.now().strftime('%Y-%m-%d')}")
+
+                    # ── Regime reserve status
+                    _regime_st = _result.get("regime_status", {})
+                    _dip_rsv   = _result.get("dip_reserve", {})
+                    _r_sym     = _SC.get("region_symbol", {"US":"$","EU":"€","IN":"₹"})
+                    _rsv_pct   = _SC.get("regime_reserve_pct", 0.10)
+                    st.info(
+                        f"**Regime Reserve ({_rsv_pct*100:.0f}%/mo):** "
+                        + "  |  ".join(
+                            f"{m}: {_regime_st.get(m,'—')}  (reserve: {_r_sym.get(m,'')}{_dip_rsv.get(m,0):,.0f})"
+                            for m in sip_markets_sel
+                        )
+                    )
 
                     _exits = _result["exits"]
                     st.subheader(f"Exit / Trim Signals ({len(_exits)})")
@@ -1129,7 +1155,7 @@ with T_SIP:
                             except Exception:
                                 pass
 
-                    # Run backtest
+                    # Run backtest with C2 regime reserve
                     _sbt_prog.progress(90, text="Simulating…")
                     from backtest_sip import run_sip_backtest
                     _sbt_result = run_sip_backtest(
@@ -1139,6 +1165,7 @@ with T_SIP:
                         region_budget=_sbt_region_budget,
                         max_picks=int(_sbt_picks),
                         markets=_sbt_markets,
+                        regime_reserve_pct=0.10,
                     )
                     _sbt_prog.progress(100, text="Done")
                     _sbt_prog.empty()

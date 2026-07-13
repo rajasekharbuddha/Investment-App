@@ -1,0 +1,39 @@
+Fetching 20 tickers (12 yrs of history)...
+  Cache: 20/20 served from disk
+  Data: 20/20 ok, 0 failed []
+Computing indicators...
+Backtesting 2575 days [2016-01-01 to 2026-06-04]
+
+[1m[94m====================================================================[0m
+[1m[97m  MASTERMIND PRO -- BACKTEST  (IN_v3_static_high9_risk9)[0m
+[1m[94m====================================================================[0m
+  Period:  2016-01-01 to 2026-06-06
+  Capital: 100,000  |  Slippage: 0.10%  Commission: 0.10%
+
+  Final equity                   [97m  147,429.76[0m
+  Total return                   [92m    +47.43%[0m
+  CAGR                           [92m     +3.79%[0m
+  Max drawdown                   [91m    -25.87%[0m
+  Sharpe ratio                   [97m     0.334[0m
+  Sortino ratio                  [97m     0.448[0m
+
+  Total trades                   [97m       331[0m
+  Win rate                       [97m      34.4%[0m
+  Avg R-multiple                 [97m    +0.208R[0m
+  Profit factor                  [97m     1.217[0m
+  Ann. volatility                [97m     14.58%[0m
+
+[1m[94m====================================================================[0m
+[1m[97m  INDEX BENCHMARK COMPARISON[0m
+[1m[94m====================================================================[0m
+  Index              CAGR    MaxDD   Sharpe    Alpha
+  --------------------------------------------------
+  [96mNifty 50      [0m  [92m +11.12%[0m  [91m -38.44%[0m     0.745  [91m  -7.33%[0m
+
+  [93mAlpha = Strategy CAGR minus Index CAGR (same period)[0m
+  [93mNote: multi-market result mixes USD/EUR/INR vs single-currency indices[0m
+
+[1m[94m====================================================================[0m
+  [93mDISCLAIMER: This system is for RESEARCH and PAPER TRADING only. Output is NOT financial advice. Do NOT deploy live capital without independent validation, regulatory compliance review, and full risk disclosure. Past simulated performance does not guarantee future results.[0m
+[1m[94m====================================================================[0m
+

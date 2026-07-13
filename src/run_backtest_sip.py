@@ -44,8 +44,9 @@ def main() -> None:
     parser.add_argument("--markets",    default="US,EU,IN",    help="Comma-separated markets (default: US,EU,IN)")
     parser.add_argument("--max-picks",  type=int,   default=5,       help="Max stocks per month (default: 5)")
     parser.add_argument("--top-n",      type=int,   default=100,     help="Universe size per market (default: 100)")
-    parser.add_argument("--commission", type=float, default=0.001,   help="One-way commission (default: 0.001)")
-    parser.add_argument("--slippage",   type=float, default=0.001,   help="One-way slippage (default: 0.001)")
+    parser.add_argument("--commission",      type=float, default=0.001, help="One-way commission (default: 0.001)")
+    parser.add_argument("--slippage",        type=float, default=0.001, help="One-way slippage (default: 0.001)")
+    parser.add_argument("--regime-reserve",  type=float, default=0.10,  help="Regime reserve fraction (default: 0.10)")
     args = parser.parse_args()
 
     markets = [m.strip().upper() for m in args.markets.split(",")]
@@ -128,6 +129,7 @@ def main() -> None:
         commission=args.commission,
         slippage=args.slippage,
         markets=markets,
+        regime_reserve_pct=args.regime_reserve,
     )
 
     if "error" in result:

@@ -52,5 +52,41 @@
     "is_high_vol": true,
     "cost": 23943.92,
     "days_held": 0
+  },
+  {
+    "ticker": "ADM",
+    "market": "US",
+    "sector": "Unknown",
+    "entry_price": 83.37000274658203,
+    "entry_date": "2026-06-05",
+    "shares": 287,
+    "stop_loss": 76.37218148418071,
+    "stop_loss_initial": 76.37218148418071,
+    "trail_mult": 6.0,
+    "peak_price": 84.73999786376953,
+    "atr_at_entry": 2.3326070874671037,
+    "risk_pct": 0.04,
+    "regime": "High Vol",
+    "is_high_vol": true,
+    "cost": 23951.12,
+    "days_held": 0
+  },
+  {
+    "ticker": "EA",
+    "market": "US",
+    "sector": "Unknown",
+    "entry_price": 203.39999389648438,
+    "entry_date": "2026-06-05",
+    "shares": 117,
+    "stop_loss": 201.0453414492132,
+    "stop_loss_initial": 201.0453414492132,
+    "trail_mult": 12.0,
+    "peak_price": 203.74000549316406,
+    "atr_at_entry": 0.9418609789084769,
+    "risk_pct": 0.1,
+    "regime": "Low Vol",
+    "is_high_vol": false,
+    "cost": 23821.6,
+    "days_held": 0
   }
 ]

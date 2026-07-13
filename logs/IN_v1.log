@@ -1,0 +1,42 @@
+  [universe] Loaded 250 tickers across ['IN']
+Fetching 250 tickers (12 yrs of history)...
+  Cache: 175/250 served from disk
+  Downloading 75 tickers (batches of 100, 12 workers)...
+  Progress: 250/250  (0 failed so far)
+  Data: 250/250 ok, 0 failed []
+Computing indicators...
+Backtesting 2576 days [2016-01-01 to 2026-06-05]
+
+[1m[94m====================================================================[0m
+[1m[97m  MASTERMIND PRO -- BACKTEST  (IN_v1_trail9_risk9)[0m
+[1m[94m====================================================================[0m
+  Period:  2016-01-01 to 2026-06-06
+  Capital: 100,000  |  Slippage: 0.10%  Commission: 0.10%
+
+  Final equity                   [97m  300,533.45[0m
+  Total return                   [92m   +200.53%[0m
+  CAGR                           [92m    +11.13%[0m
+  Max drawdown                   [91m    -25.83%[0m
+  Sharpe ratio                   [97m     0.724[0m
+  Sortino ratio                  [97m     1.018[0m
+
+  Total trades                   [97m       452[0m
+  Win rate                       [97m      33.2%[0m
+  Avg R-multiple                 [97m    +0.379R[0m
+  Profit factor                  [97m     1.415[0m
+  Ann. volatility                [97m     16.83%[0m
+
+[1m[94m====================================================================[0m
+[1m[97m  INDEX BENCHMARK COMPARISON[0m
+[1m[94m====================================================================[0m
+  Index              CAGR    MaxDD   Sharpe    Alpha
+  --------------------------------------------------
+  [96mNifty 50      [0m  [92m +11.12%[0m  [91m -38.44%[0m     0.745  [92m  +0.01%[0m
+
+  [93mAlpha = Strategy CAGR minus Index CAGR (same period)[0m
+  [93mNote: multi-market result mixes USD/EUR/INR vs single-currency indices[0m
+
+[1m[94m====================================================================[0m
+  [93mDISCLAIMER: This system is for RESEARCH and PAPER TRADING only. Output is NOT financial advice. Do NOT deploy live capital without independent validation, regulatory compliance review, and full risk disclosure. Past simulated performance does not guarantee future results.[0m
+[1m[94m====================================================================[0m
+
