@@ -58,41 +58,11 @@ def _parse_ansi(text: str):
 
 
 # ── Settings helpers ──────────────────────────────────────────────────────────
-_SETTINGS_FILE = ROOT / "app_settings.json"
-_DEFAULTS = {
-    "account_size":          100_000,
-    "max_positions":         8,
-    "max_per_sector":        8,          # 8/8 = 1.0 → no effective cap for IN (all Unknown sector)
-    "max_high_vol":          4,
-    "max_position_size_pct": 0.24,       # 24% baseline — Run 17 optimised
-    "max_concentration_pct": 0.32,       # 32% ceiling for velocity-scaled leaders
-    "quality_filter":        True,
-    "dynamic_universe":      True,
-    "momentum_exit":         True,
-    "vol_penalty":           False,      # disable vol divisor in momentum ranking
-    "momentum_grace":        7,          # days after entry before momentum exit can fire
-    "momentum_periods":      "14,30,63", # focused momentum periods for early trend detection
-    "top_n_us":              200,        # DYNAMIC_UNIVERSE universe fetch size
-    "top_n_eu":              200,
-    "top_n_in":              250,
-    "rank_top_n_us":         10,         # RANKING bench-list top-N per market
-    "rank_top_n_eu":         10,
-    "rank_top_n_in":         10,
-}
-
-
-def _load_settings() -> dict:
-    s = dict(_DEFAULTS)
-    if _SETTINGS_FILE.exists():
-        try:
-            s.update(json.loads(_SETTINGS_FILE.read_text()))
-        except Exception:
-            pass
-    return s
-
-
-def _save_settings(s: dict):
-    _SETTINGS_FILE.write_text(json.dumps(s, indent=2))
+# Shared with app_web.py via src/app_settings.py so both UIs read/write the
+# same app_settings.json instead of duplicating (and drifting on) defaults.
+from app_settings import DEFAULTS as _DEFAULTS
+from app_settings import load_settings as _load_settings
+from app_settings import save_settings as _save_settings
 
 
 # ── Thread → UI bridge ────────────────────────────────────────────────────────
@@ -193,6 +163,9 @@ class App(tk.Tk):
             ("posttrade",   "  Post-Trade  ",      self._tab_posttrade),
             ("backtest",    "  Backtest  ",        self._tab_backtest),
             ("longterm",    "  Long-Term  ",       self._tab_longterm),
+            ("walkforward", "  Walk-Forward  ",    self._tab_walkforward),
+            ("stresstest",  "  Stress Tests  ",    self._tab_stresstest),
+            ("montecarlo",  "  Monte Carlo  ",     self._tab_montecarlo),
             ("sip",         "  SIP Plan  ",        self._tab_sip),
             ("compounding", "  Compounding Sim  ", self._tab_compounding),
             ("portfolio",   "  Portfolio  ",       self._tab_portfolio),
@@ -2190,6 +2163,314 @@ class App(tk.Tk):
             return
         self._sim_results["df"].round(2).to_csv(path, index=False)
         self._status.set(f"Ledger exported → {path}")
+
+    # ═══════════════════════════════ WALK-FORWARD ════════════════════════════
+
+    def _tab_walkforward(self, parent):
+        bar = tk.Frame(parent, bg=self.BG, padx=14, pady=12)
+        bar.pack(fill="x")
+
+        self._wf_market   = self._combo(bar, "Market:", ["IN", "US", "EU", "ALL"], "IN", 5)
+        self._wf_years    = self._entry(bar, "Years:", "5", 4)
+        self._wf_train    = self._entry(bar, "Train (days):", "504", 6)
+        self._wf_test     = self._entry(bar, "Test (days):", "126", 6)
+        self._wf_equity   = self._entry(bar, "Equity:", "100000", 9)
+
+        self._wf_anchored = tk.BooleanVar(value=False)
+        tk.Checkbutton(bar, text="Anchored (expanding) train window", variable=self._wf_anchored,
+                       bg=self.BG, fg=self.MUTED, selectcolor=self.SURFACE,
+                       activebackground=self.BG, activeforeground=self.ACCENT,
+                       font=(_MONO, 9)).pack(side="left", padx=(0, 8))
+
+        self._wf_btn = self._button(bar, "▶  Run Walk-Forward", self._run_walkforward)
+        self._wf_btn.pack(side="left", padx=(8, 0))
+        self._button(bar, "Clear", lambda: self._clear(self._wf_out), w=6
+                     ).pack(side="left", padx=(8, 0))
+
+        tk.Label(parent,
+                 text="  Optimises gate parameters on rolling in-sample windows; evaluates out-of-sample.",
+                 bg=self.BG, fg=self.MUTED, font=(_MONO, 9), anchor="w"
+                 ).pack(fill="x", padx=14, pady=(0, 2))
+
+        self._wf_out = self._terminal(parent)
+
+    def _run_walkforward(self):
+        if self._check_busy():
+            return
+        try:
+            years  = int(self._wf_years.get())
+            train  = int(self._wf_train.get())
+            test   = int(self._wf_test.get())
+            equity = float(self._wf_equity.get())
+        except ValueError:
+            messagebox.showerror("Invalid input", "Years/Train/Test/Equity must be valid numbers.")
+            return
+
+        self._clear(self._wf_out)
+        self._target = self._wf_out
+        self._busy    = True
+        self._wf_btn.configure(state="disabled", text="Running…")
+        self._status.set("Running walk-forward…")
+        market   = self._wf_market.get()
+        anchored = self._wf_anchored.get()
+        threading.Thread(target=self._worker_walkforward,
+                         args=(market, years, train, test, anchored, equity), daemon=True).start()
+
+    def _worker_walkforward(self, market, years, train, test, anchored, equity):
+        import contextlib, traceback
+        w = _QWriter(self._q)
+        try:
+            with contextlib.redirect_stdout(w), contextlib.redirect_stderr(w):
+                from config import WATCHLIST
+                from data import fetch_and_cache
+                from indicators import calculate_all
+                from walk_forward import walk_forward, format_wfo_summary
+
+                active = ["US", "EU", "IN"] if market == "ALL" else [market]
+                wl = {m: WATCHLIST[m] for m in active if m in WATCHLIST}
+                all_tickers = [t for tl in wl.values() for t in tl]
+
+                w.write(f"\n[WF] Fetching {len(all_tickers)} tickers ({years} yrs)...\n")
+                data_map_raw, stats = fetch_and_cache(all_tickers, years=years)
+                w.write(f"[WF] {stats['succeeded']}/{stats['attempted']} tickers ok. Computing indicators...\n")
+
+                data_map  = {t: calculate_all(df) for t, df in data_map_raw.items()}
+                all_dates = sorted({d for df in data_map.values() for d in df.index})
+
+                w.write("[WF] Running walk-forward folds... (this may take several minutes)\n")
+                result = walk_forward(
+                    data_map=data_map, watchlist=wl, all_dates=all_dates,
+                    train_size=train, test_size=test, anchored=anchored,
+                    initial_equity=equity, verbose=True,
+                )
+                w.write("\n" + format_wfo_summary(result))
+
+        except Exception as exc:
+            w.write(f"\n\033[91mError: {exc}\033[0m\n{traceback.format_exc()}")
+        finally:
+            self._busy = False
+            self.after(0, lambda: self._wf_btn.configure(state="normal", text="▶  Run Walk-Forward"))
+            self.after(0, lambda: self._status.set(
+                f"Walk-forward complete — {datetime.now().strftime('%H:%M:%S')}"))
+
+    # ═══════════════════════════════ STRESS TESTS ════════════════════════════
+
+    def _tab_stresstest(self, parent):
+        bar = tk.Frame(parent, bg=self.BG, padx=14, pady=12)
+        bar.pack(fill="x")
+
+        self._st_market = self._combo(bar, "Market:", ["IN", "US", "EU", "ALL"], "IN", 5)
+        self._st_years  = self._entry(bar, "Years:", "5", 4)
+        self._st_equity = self._entry(bar, "Equity:", "100000", 9)
+        self._st_mode   = self._combo(bar, "Scenarios:",
+                                      ["All", "Historical only", "Synthetic only"], "All", 16)
+
+        self._st_btn = self._button(bar, "▶  Run Stress Tests", self._run_stresstest)
+        self._st_btn.pack(side="left", padx=(8, 0))
+        self._button(bar, "Clear", lambda: self._clear(self._st_out), w=6
+                     ).pack(side="left", padx=(8, 0))
+
+        tk.Label(parent,
+                 text="  Historical windows (2008, 2020, 2022) + synthetic shocks"
+                      " (vol spike, liquidity collapse, gaps, correlation crisis).",
+                 bg=self.BG, fg=self.MUTED, font=(_MONO, 9), anchor="w"
+                 ).pack(fill="x", padx=14, pady=(0, 2))
+
+        self._st_out = self._terminal(parent)
+
+    def _run_stresstest(self):
+        if self._check_busy():
+            return
+        try:
+            years  = int(self._st_years.get())
+            equity = float(self._st_equity.get())
+        except ValueError:
+            messagebox.showerror("Invalid input", "Years/Equity must be valid numbers.")
+            return
+
+        self._clear(self._st_out)
+        self._target = self._st_out
+        self._busy    = True
+        self._st_btn.configure(state="disabled", text="Running…")
+        self._status.set("Running stress tests…")
+        market = self._st_market.get()
+        mode   = self._st_mode.get()
+        threading.Thread(target=self._worker_stresstest,
+                         args=(market, years, equity, mode), daemon=True).start()
+
+    def _worker_stresstest(self, market, years, equity, mode):
+        import contextlib, traceback
+        w = _QWriter(self._q)
+        try:
+            with contextlib.redirect_stdout(w), contextlib.redirect_stderr(w):
+                from config import WATCHLIST
+                from data import fetch_and_cache
+                from indicators import calculate_all
+                from stress_tests import (run_all_stress_tests, run_historical_stress,
+                                          run_synthetic_stress, format_stress_summary)
+
+                active = ["US", "EU", "IN"] if market == "ALL" else [market]
+                wl = {m: WATCHLIST[m] for m in active if m in WATCHLIST}
+                all_tickers = [t for tl in wl.values() for t in tl]
+
+                w.write(f"\n[ST] Fetching {len(all_tickers)} tickers...\n")
+                data_map_raw, stats = fetch_and_cache(all_tickers, years=years)
+                w.write("[ST] Computing indicators...\n")
+                data_map = {t: calculate_all(df) for t, df in data_map_raw.items()}
+
+                w.write(f"[ST] Running {mode.lower()} scenarios...\n")
+                if mode == "Historical only":
+                    result = {"historical": run_historical_stress(data_map, wl, equity),
+                             "synthetic":  {}}
+                elif mode == "Synthetic only":
+                    result = {"historical": {},
+                             "synthetic":  run_synthetic_stress(data_map, wl, equity)}
+                else:
+                    result = run_all_stress_tests(data_map, wl, initial_equity=equity)
+
+                w.write("\n" + format_stress_summary(result))
+
+        except Exception as exc:
+            w.write(f"\n\033[91mError: {exc}\033[0m\n{traceback.format_exc()}")
+        finally:
+            self._busy = False
+            self.after(0, lambda: self._st_btn.configure(state="normal", text="▶  Run Stress Tests"))
+            self.after(0, lambda: self._status.set(
+                f"Stress tests complete — {datetime.now().strftime('%H:%M:%S')}"))
+
+    # ═══════════════════════════════ MONTE CARLO ═════════════════════════════
+
+    def _tab_montecarlo(self, parent):
+        from matplotlib.figure import Figure
+        from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+
+        bar = tk.Frame(parent, bg=self.BG, padx=14, pady=12)
+        bar.pack(fill="x")
+
+        self._mc_nsims = self._entry(bar, "Simulations:", "5000", 8)
+        self._mc_skip  = self._entry(bar, "Skip prob:", "0.05", 6)
+        self._mc_equity = self._entry(bar, "Equity:", "100000", 9)
+
+        reports_dir = ROOT / "reports"
+        trade_files = sorted(reports_dir.glob("*-trades.csv"), reverse=True) if reports_dir.exists() else []
+        self._mc_files = {f.name: f for f in trade_files}
+        self._mc_file = self._combo(bar, "Trade CSV:",
+                                    ["(use latest)"] + list(self._mc_files.keys()),
+                                    "(use latest)", 24)
+
+        self._mc_btn = self._button(bar, "▶  Run Monte Carlo", self._run_montecarlo)
+        self._mc_btn.pack(side="left", padx=(8, 0))
+        self._button(bar, "Clear", self._clear_montecarlo, w=6).pack(side="left", padx=(8, 0))
+
+        tk.Label(parent,
+                 text="  Bootstraps the backtest trade log N times. Run Backtest first to generate a trades CSV.",
+                 bg=self.BG, fg=self.MUTED, font=(_MONO, 9), anchor="w"
+                 ).pack(fill="x", padx=14, pady=(0, 2))
+
+        self._mc_fig = Figure(figsize=(8, 3.2), dpi=100, facecolor=self.BG2)
+        self._mc_ax  = self._mc_fig.add_subplot(111)
+        self._style_sim_axis(self._mc_ax)
+        self._mc_canvas = FigureCanvasTkAgg(self._mc_fig, master=parent)
+        self._mc_canvas.get_tk_widget().pack(fill="x", padx=14, pady=(0, 8))
+
+        self._mc_out = self._terminal(parent)
+
+    def _run_montecarlo(self):
+        if self._check_busy():
+            return
+
+        reports_dir = ROOT / "reports"
+        trade_files = sorted(reports_dir.glob("*-trades.csv"), reverse=True) if reports_dir.exists() else []
+        if not trade_files:
+            messagebox.showerror("No trades found", "No trades CSV found in reports/. Run a Backtest first.")
+            return
+
+        sel = self._mc_file.get()
+        trades_path = trade_files[0] if sel == "(use latest)" else self._mc_files.get(sel, trade_files[0])
+
+        try:
+            n_sims    = int(self._mc_nsims.get())
+            skip_prob = float(self._mc_skip.get())
+            equity    = float(self._mc_equity.get())
+        except ValueError:
+            messagebox.showerror("Invalid input", "Simulations/Skip prob/Equity must be valid numbers.")
+            return
+
+        self._clear(self._mc_out)
+        self._target = self._mc_out
+        self._busy    = True
+        self._mc_btn.configure(state="disabled", text="Running…")
+        self._status.set("Running Monte Carlo…")
+        threading.Thread(target=self._worker_montecarlo,
+                         args=(trades_path, n_sims, skip_prob, equity), daemon=True).start()
+
+    def _worker_montecarlo(self, trades_path, n_sims, skip_prob, equity):
+        import contextlib, traceback
+        w = _QWriter(self._q)
+        try:
+            with contextlib.redirect_stdout(w), contextlib.redirect_stderr(w):
+                from monte_carlo import run_monte_carlo, format_mc_summary
+
+                w.write(f"\n[MC] Loading {trades_path.name}...\n")
+                trades_df = pd.read_csv(trades_path)
+                trades    = trades_df.to_dict("records")
+                w.write(f"[MC] Running {n_sims:,} simulations on {len(trades)} trades...\n")
+
+                result = run_monte_carlo(
+                    trades=trades, initial_equity=equity,
+                    n_sims=n_sims, skip_prob=skip_prob, seed=42,
+                )
+                w.write("\n" + format_mc_summary(result))
+
+            self.after(0, lambda: self._update_montecarlo_chart(result))
+
+        except Exception as exc:
+            w.write(f"\n\033[91mError: {exc}\033[0m\n{traceback.format_exc()}")
+        finally:
+            self._busy = False
+            self.after(0, lambda: self._mc_btn.configure(state="normal", text="▶  Run Monte Carlo"))
+            self.after(0, lambda: self._status.set(
+                f"Monte Carlo complete — {datetime.now().strftime('%H:%M:%S')}"))
+
+    def _update_montecarlo_chart(self, result: dict):
+        import numpy as np
+        ax = self._mc_ax
+        ax.clear()
+        self._style_sim_axis(ax)
+
+        sample_paths = result.get("sample_paths", [])
+        if sample_paths:
+            # Paths can be shorter than others (random trade-skipping / early ruin
+            # break in simulate_equity_curve), so forward-fill each path's last
+            # value out to the longest path before stacking into a 2-D array.
+            max_len = max(len(p) for p in sample_paths)
+            arr = np.array([p + [p[-1]] * (max_len - len(p)) for p in sample_paths])
+            percentiles = {
+                "p5":     np.percentile(arr, 5,  axis=0),
+                "p25":    np.percentile(arr, 25, axis=0),
+                "median": np.percentile(arr, 50, axis=0),
+                "p75":    np.percentile(arr, 75, axis=0),
+                "p95":    np.percentile(arr, 95, axis=0),
+            }
+            colors = {"p5": self.RED, "p25": self.YELLOW, "median": self.ACCENT,
+                     "p75": self.YELLOW, "p95": self.RED}
+            x = np.arange(arr.shape[1])
+            for label, series in percentiles.items():
+                ax.plot(x, series, color=colors[label], linewidth=1.6 if label == "median" else 1.0,
+                       linestyle="-" if label == "median" else "--", label=label)
+            ax.set_xlabel("Trade #")
+            ax.set_ylabel("Equity")
+            legend = ax.legend(loc="upper left", fontsize=8, facecolor=self.BG2, edgecolor=self.SURFACE)
+            for text in legend.get_texts():
+                text.set_color(self.TEXT)
+            self._mc_fig.tight_layout()
+        self._mc_canvas.draw()
+
+    def _clear_montecarlo(self):
+        self._clear(self._mc_out)
+        self._mc_ax.clear()
+        self._style_sim_axis(self._mc_ax)
+        self._mc_canvas.draw()
 
     def _run_longterm(self):
         if self._check_busy():

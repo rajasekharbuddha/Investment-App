@@ -81,8 +81,11 @@ with st.sidebar:
 
 # ── Tabs ───────────────────────────────────────────────────────────────────────
 
-T_SCAN, T_BT, T_LTB, T_LTS, T_WF, T_ST, T_MC, T_SIP, T_SIM, T_PORT, T_REP = st.tabs([
+(T_SCAN, T_UNIV, T_PT, T_BT, T_LTB, T_LTS, T_WF, T_ST, T_MC, T_SIP, T_SIM,
+ T_PORT, T_REP, T_BENCH, T_SET) = st.tabs([
     "📊 Daily Scan",
+    "🌌 Universe",
+    "🧾 Post-Trade",
     "📈 ST Backtest",
     "🏦 LT Backtest",
     "🔭 LT Screener",
@@ -93,6 +96,8 @@ T_SCAN, T_BT, T_LTB, T_LTS, T_WF, T_ST, T_MC, T_SIP, T_SIM, T_PORT, T_REP = st.t
     "🧮 Compounding Sim",
     "💼 Portfolio",
     "📁 Reports",
+    "🪑 Bench List",
+    "⚙ Settings",
 ])
 
 
@@ -322,6 +327,86 @@ with T_SCAN:
             st.error(f"Scan failed: {exc}")
             with st.expander("📋 Progress log"):
                 st.text(_strip(buf.getvalue()))
+            st.exception(exc)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB — Universe
+# ══════════════════════════════════════════════════════════════════════════════
+
+with T_UNIV:
+    st.header("Universe Scoring")
+    st.caption("Score all tickers by momentum velocity, SMA50 trend distance, and composite grade.")
+
+    if st.button("▶ Score Universe", type="primary", key="btn_univ"):
+        buf = io.StringIO()
+        try:
+            from config import WATCHLIST, DYNAMIC_UNIVERSE
+            from data import fetch_all
+            from indicators import calculate_all
+            from stock_selector import score_all
+            from report import quality_report
+
+            with st.status("Scoring universe…", expanded=True) as status:
+                with contextlib.redirect_stdout(buf):
+                    if dynamic_universe_s:
+                        from universe import get_dynamic_watchlist
+                        score_top_n = DYNAMIC_UNIVERSE.get("SCORE_TOP_N", {})
+                        active_wl = get_dynamic_watchlist(
+                            None, score_top_n,
+                            max_age_days=DYNAMIC_UNIVERSE.get("MAX_AGE_DAYS", 7))
+                    else:
+                        active_wl = WATCHLIST
+
+                total = sum(len(v) for v in active_wl.values())
+                st.write(f"📥 Fetching EOD data ({total} tickers)…")
+                with contextlib.redirect_stdout(buf):
+                    raw = fetch_all(active_wl, years=3)
+
+                st.write(f"⚙ Calculating indicators for {len(raw)} tickers…")
+                with contextlib.redirect_stdout(buf):
+                    data_map = {t: calculate_all(df) for t, df in raw.items()}
+
+                st.write("🔎 Scoring universe (momentum velocity + SMA50 trend)…")
+                with contextlib.redirect_stdout(buf):
+                    scores_df = score_all(data_map)
+                    report_text = quality_report(scores_df, top_n=len(scores_df))
+
+                status.update(label="Done!", state="complete")
+
+            st.code(_strip(report_text), language=None)
+            with st.expander("📋 Progress log"):
+                st.text(_strip(buf.getvalue()))
+
+        except Exception as exc:
+            st.error(f"Universe scoring failed: {exc}")
+            with st.expander("📋 Progress log"):
+                st.text(_strip(buf.getvalue()))
+            st.exception(exc)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB — Post-Trade
+# ══════════════════════════════════════════════════════════════════════════════
+
+with T_PT:
+    st.header("Post-Trade Analysis")
+    st.caption("Enrich today's WAIT/ENTER/NEAR journal rows with sizing, "
+               "market-behaviour and Tier 3 reflection.")
+
+    if st.button("▶ Run Post-Trade Analysis", type="primary", key="btn_pt"):
+        buf = io.StringIO()
+        try:
+            from post_trade import run as pt_run
+
+            with contextlib.redirect_stdout(buf):
+                pt_run()
+
+            st.code(_strip(buf.getvalue()), language=None)
+
+        except Exception as exc:
+            st.error(f"Post-trade analysis failed: {exc}")
+            st.code(_strip(buf.getvalue()), language=None)
             st.exception(exc)
 
 
@@ -790,33 +875,33 @@ with T_MC:
                 status.update(label="Done!", state="complete")
 
             # Percentile metrics
-            pct = result.get("percentiles", {})
+            pct = result.get("final_equity", {})
             if pct:
                 cols = st.columns(5)
                 labels = ["5th %ile", "25th %ile", "Median", "75th %ile", "95th %ile"]
                 keys   = ["p5", "p25", "p50", "p75", "p95"]
                 for col, key, lbl in zip(cols, keys, labels):
-                    val = pct.get(key, {})
-                    eq  = val.get("final_equity", val) if isinstance(val, dict) else val
-                    col.metric(lbl, f"{eq:,.0f}" if isinstance(eq, (int, float)) else str(eq))
+                    eq = pct.get(key)
+                    col.metric(lbl, f"{eq:,.0f}" if isinstance(eq, (int, float)) else "—")
 
             # Percentile equity paths chart
             sample_paths = result.get("sample_paths", [])
             if sample_paths:
-                try:
-                    import numpy as np
-                    arr = np.array(sample_paths)
-                    chart_df = pd.DataFrame({
-                        "p5":     np.percentile(arr, 5,  axis=0),
-                        "p25":    np.percentile(arr, 25, axis=0),
-                        "median": np.percentile(arr, 50, axis=0),
-                        "p75":    np.percentile(arr, 75, axis=0),
-                        "p95":    np.percentile(arr, 95, axis=0),
-                    })
-                    st.subheader("Percentile Equity Paths")
-                    st.line_chart(chart_df, width="stretch")
-                except Exception:
-                    pass
+                # Paths can be shorter than others (random trade-skipping / early
+                # ruin break in simulate_equity_curve), so forward-fill each path's
+                # last value out to the longest path before stacking into an array.
+                import numpy as np
+                max_len = max(len(p) for p in sample_paths)
+                arr = np.array([p + [p[-1]] * (max_len - len(p)) for p in sample_paths])
+                chart_df = pd.DataFrame({
+                    "p5":     np.percentile(arr, 5,  axis=0),
+                    "p25":    np.percentile(arr, 25, axis=0),
+                    "median": np.percentile(arr, 50, axis=0),
+                    "p75":    np.percentile(arr, 75, axis=0),
+                    "p95":    np.percentile(arr, 95, axis=0),
+                })
+                st.subheader("Percentile Equity Paths")
+                st.line_chart(chart_df, width="stretch")
 
             st.code(_strip(report_text), language=None)
 
@@ -2010,3 +2095,169 @@ with T_REP:
                 key="rep_download",
             )
             st.code(content, language=None)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB — Bench List (Replacement Candidates)
+# ══════════════════════════════════════════════════════════════════════════════
+
+with T_BENCH:
+    st.header("Bench List")
+    st.caption("Replacement candidates per market, ranked ENTER → NEAR → WAIT → SKIP "
+               "(quality desc, then ATR% asc within ENTER).")
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        bench_market = st.selectbox("Market", ["ALL", "US", "EU", "IN"], key="bench_market")
+    with c2:
+        bench_topn = st.number_input("Top N", value=20, min_value=1, step=5, key="bench_topn")
+    with c3:
+        bench_qf = st.checkbox("Quality sort", value=quality_filter_s, key="bench_qf")
+
+    if st.button("▶ Build Bench List", type="primary", key="btn_bench"):
+        buf = io.StringIO()
+        try:
+            from config import WATCHLIST, DYNAMIC_UNIVERSE
+            from data import fetch_all
+            from indicators import calculate_all
+            from adaptive_tuner import AdaptiveTuner
+            from replacement_list import build_replacement_list, format_bench_table
+
+            active = ["US", "EU", "IN"] if bench_market == "ALL" else [bench_market]
+
+            with st.status(f"Building bench list [{bench_market}]…", expanded=True) as status:
+                with contextlib.redirect_stdout(buf):
+                    if dynamic_universe_s:
+                        from universe import get_dynamic_watchlist
+                        score_top_n = {m: DYNAMIC_UNIVERSE["SCORE_TOP_N"].get(m, 200) for m in active}
+                        wl = get_dynamic_watchlist(
+                            active, score_top_n,
+                            max_age_days=DYNAMIC_UNIVERSE.get("MAX_AGE_DAYS", 7))
+                    else:
+                        wl = {m: WATCHLIST[m] for m in active if m in WATCHLIST}
+
+                st.write("📥 Fetching EOD data…")
+                with contextlib.redirect_stdout(buf):
+                    raw = fetch_all(wl, years=3)
+                    data_map = {t: calculate_all(df) for t, df in raw.items()}
+
+                quality_scores: dict = {}
+                if bench_qf:
+                    st.write("🔎 Scoring candidates…")
+                    with contextlib.redirect_stdout(buf):
+                        from select_stocks import quality_score_all
+                        quality_scores = quality_score_all(data_map)
+
+                with contextlib.redirect_stdout(buf):
+                    tuner = AdaptiveTuner.load(str(ROOT / "tuner_state.json"))
+                    report_parts = []
+                    for mk in active:
+                        bench = build_replacement_list(
+                            mk, data_map, tuner_mode=tuner.mode,
+                            top_n=int(bench_topn), quality_scores=quality_scores,
+                        )
+                        report_parts.append(
+                            f"\n{'='*88}\n"
+                            f"  REPLACEMENT LIST -- {mk}  (tuner: {tuner.mode})  {len(bench)} candidates\n"
+                            f"{'='*88}\n"
+                            f"{format_bench_table(bench)}\n"
+                        )
+                    report_text = "\n".join(report_parts)
+
+                status.update(label="Done!", state="complete")
+
+            st.code(_strip(report_text), language=None)
+            with st.expander("📋 Progress log"):
+                st.text(_strip(buf.getvalue()))
+
+        except Exception as exc:
+            st.error(f"Bench list build failed: {exc}")
+            with st.expander("📋 Progress log"):
+                st.text(_strip(buf.getvalue()))
+            st.exception(exc)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB — Settings
+# ══════════════════════════════════════════════════════════════════════════════
+
+with T_SET:
+    st.header("Account & Risk Settings")
+    st.caption("Shared with the desktop app — both read/write the same app_settings.json.")
+
+    from app_settings import load_settings as _load_web_settings, save_settings as _save_web_settings
+
+    if "web_settings" not in st.session_state:
+        st.session_state["web_settings"] = _load_web_settings()
+    _cur = st.session_state["web_settings"]
+
+    with st.form("settings_form"):
+        st.subheader("Numeric")
+        n1, n2, n3 = st.columns(3)
+        with n1:
+            set_account   = st.number_input("Account Size", value=int(_cur["account_size"]), step=10_000)
+            set_max_pos   = st.number_input("Max Open Positions", value=int(_cur["max_positions"]), step=1)
+            set_max_sec   = st.number_input("Max Per Sector (slots)", value=int(_cur["max_per_sector"]), step=1)
+        with n2:
+            set_max_hv    = st.number_input("Max High-Vol Per Market", value=int(_cur["max_high_vol"]), step=1)
+            set_pos_pct   = st.number_input("Entry Size Cap (0-1 fraction)",
+                                            value=float(_cur["max_position_size_pct"]), step=0.01, format="%.2f")
+            set_conc_pct  = st.number_input("Max Concentration Cap (0-1 frac)",
+                                            value=float(_cur["max_concentration_pct"]), step=0.01, format="%.2f")
+        with n3:
+            set_grace     = st.number_input("Momentum Exit Grace (days)", value=int(_cur["momentum_grace"]), step=1)
+            set_periods   = st.text_input("Momentum Periods (csv)", value=str(_cur["momentum_periods"]))
+
+        st.subheader("Universe / Ranking Top-N")
+        u1, u2, u3 = st.columns(3)
+        with u1:
+            set_topn_us   = st.number_input("Top-N US (universe fetch)", value=int(_cur["top_n_us"]), step=10)
+            set_ranktn_us = st.number_input("Ranking Top-N US", value=int(_cur["rank_top_n_us"]), step=1)
+        with u2:
+            set_topn_eu   = st.number_input("Top-N EU (universe fetch)", value=int(_cur["top_n_eu"]), step=10)
+            set_ranktn_eu = st.number_input("Ranking Top-N EU", value=int(_cur["rank_top_n_eu"]), step=1)
+        with u3:
+            set_topn_in   = st.number_input("Top-N IN (universe fetch)", value=int(_cur["top_n_in"]), step=10)
+            set_ranktn_in = st.number_input("Ranking Top-N IN", value=int(_cur["rank_top_n_in"]), step=1)
+
+        st.subheader("Flags")
+        b1, b2, b3, b4 = st.columns(4)
+        with b1:
+            set_qf  = st.checkbox("Quality filter", value=bool(_cur["quality_filter"]))
+        with b2:
+            set_dyn = st.checkbox("Dynamic universe", value=bool(_cur["dynamic_universe"]))
+        with b3:
+            set_mex = st.checkbox("Momentum exit", value=bool(_cur["momentum_exit"]))
+        with b4:
+            set_vp  = st.checkbox("Volatility penalty", value=bool(_cur["vol_penalty"]))
+
+        if st.form_submit_button("💾 Save Settings", type="primary"):
+            new_settings = {
+                "account_size": int(set_account), "max_positions": int(set_max_pos),
+                "max_per_sector": int(set_max_sec), "max_high_vol": int(set_max_hv),
+                "max_position_size_pct": float(set_pos_pct), "max_concentration_pct": float(set_conc_pct),
+                "momentum_grace": int(set_grace), "momentum_periods": set_periods,
+                "top_n_us": int(set_topn_us), "top_n_eu": int(set_topn_eu), "top_n_in": int(set_topn_in),
+                "rank_top_n_us": int(set_ranktn_us), "rank_top_n_eu": int(set_ranktn_eu),
+                "rank_top_n_in": int(set_ranktn_in),
+                "quality_filter": set_qf, "dynamic_universe": set_dyn,
+                "momentum_exit": set_mex, "vol_penalty": set_vp,
+            }
+            _save_web_settings(new_settings)
+            st.session_state["web_settings"] = new_settings
+            st.success("Settings saved successfully.")
+
+    st.caption("To add/remove stocks edit `src/config.py` directly.")
+
+    st.subheader("Watchlist Preview")
+    try:
+        from config import WATCHLIST, MARKETS
+        _wl_lines = []
+        for mk in ["US", "EU", "IN"]:
+            m = MARKETS.get(mk, {})
+            note = "" if m.get("tradeable", True) else "  [analysis only]"
+            _wl_lines.append(f"[{mk}] {m.get('name', '?')} ({m.get('currency', '?')}){note}")
+            _wl_lines.extend(f"  {t}" for t in WATCHLIST.get(mk, []))
+        st.code("\n".join(_wl_lines), language=None)
+    except Exception as exc:
+        st.error(f"Could not read config.py: {exc}")
