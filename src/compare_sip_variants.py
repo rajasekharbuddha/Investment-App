@@ -178,6 +178,8 @@ def _run_variant(
                     per_ticker = dip_reserve[mkt] / len(dip_targets)
                     for ticker in dip_targets:
                         df     = data_map.get(ticker)
+                        if df is None:
+                            continue
                         sub    = df.loc[:cycle_date]
                         buy_px = _price_at(sub, cycle_date, offset=cost)
                         if not buy_px or buy_px <= 0:

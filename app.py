@@ -718,6 +718,7 @@ class App(tk.Tk):
                 mkt_acc[market]["n"] += 1
                 mkt_acc[market]["cost"] += cost
 
+                days: "int | str"
                 try:
                     ed   = datetime.strptime(pos.get("entry_date", ""), "%Y-%m-%d").date()
                     days = (today - ed).days
@@ -1261,6 +1262,10 @@ class App(tk.Tk):
                     all_candidates.update(mkt_result["candidates"])
                     all_sizing.update(mkt_result["sizing"])
                     result = mkt_result
+
+                if result is None:
+                    w.write("  No markets processed — aborting.\n")
+                    return
 
                 w.write("\n[4/5] Generating report...\n")
                 candidates = list(all_candidates.values())

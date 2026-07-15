@@ -77,7 +77,7 @@ def daily_report(
         d["currency_symbol"] = markets.get(mkt, {}).get("symbol", "$")
         d["currency_code"]   = markets.get(mkt, {}).get("currency", "USD")
 
-    by_market = {"US": [], "EU": [], "IN": []}
+    by_market: dict[str, list] = {"US": [], "EU": [], "IN": []}
     for d in decisions:
         by_market.get(d.get("market", "US"), []).append(d)
 

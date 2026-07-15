@@ -167,7 +167,7 @@ def _select_picks(
         ranked.append((ticker, mom))
 
     ranked.sort(key=lambda x: x[1], reverse=True)
-    picks = []
+    picks: list[str] = []
     for t, _ in ranked:
         if len(picks) >= max_picks:
             break

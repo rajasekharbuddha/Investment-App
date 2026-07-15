@@ -109,4 +109,8 @@ class AdaptiveTuner:
         return cls()
 
     def reset(self) -> None:
-        self.__init__()
+        self.mode = "BASE"
+        self._ema = {}
+        self._days_low = {}
+        self._days_high = {}
+        self.history = []

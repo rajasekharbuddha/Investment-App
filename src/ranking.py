@@ -52,7 +52,7 @@ def rank_universe(
     vol_penalty: bool = False,
 ) -> List[Dict[str, Any]]:
     tickers = WATCHLIST.get(market, [])
-    rows = []
+    rows: List[Dict[str, Any]] = []
     for ticker in tickers:
         if ticker not in data_map:
             continue
@@ -96,5 +96,5 @@ def top_sectors(
     period: int = 63,
 ) -> List[str]:
     scores = sector_momentum(data_map, market, period)
-    ranked = sorted(scores, key=scores.get, reverse=True)
+    ranked = sorted(scores, key=lambda sec: scores[sec], reverse=True)
     return ranked[:k]

@@ -223,7 +223,7 @@ def allocate_budget(
         val = h.get("shares", 0) * h.get("avg_cost", 0)
         sector_totals[sec] = sector_totals.get(sec, 0.0) + val
 
-    selected = []
+    selected: list[dict] = []
     for c in candidates:
         if len(selected) >= max_picks:
             break

@@ -175,7 +175,7 @@ def run_longterm_backtest(
 
     # ── Simulation loop ───────────────────────────────────────────────────────
     cash        = equity
-    portfolio   = {}   # {ticker: shares}
+    portfolio: dict[str, float] = {}   # {ticker: shares}
     eq_curve    = []
     trades      = []
 

@@ -455,7 +455,7 @@ class DecisionEngine:
         sizing: Dict[str, Dict],
         held: List[Dict],
         virtual_pending: List[Dict],
-        sector_mom: Dict[str, float] = None,
+        sector_mom: Optional[Dict[str, float]] = None,
     ) -> Optional[Dict]:
         exit_market  = exit_pos.get("market", "US")
         exit_sector  = exit_pos.get("sector", "Unknown")
@@ -518,7 +518,7 @@ class DecisionEngine:
         held: List[Dict],
         virtual_pending: List[Dict],
         replacement_queue: List[Dict],
-        sector_mom: Dict[str, float] = None,
+        sector_mom: Optional[Dict[str, float]] = None,
     ) -> List[Dict]:
         queued    = {r["ticker"] for r in replacement_queue}
         total_pos = len(held) + len(virtual_pending)

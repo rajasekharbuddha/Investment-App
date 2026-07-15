@@ -151,7 +151,7 @@ def main() -> None:
     if alloc:
         print("  BUYS THIS MONTH:")
         for ticker, amt in alloc.items():
-            c   = next((x for x in result["candidates"] if x["ticker"] == ticker), {})
+            c: dict = next((x for x in result["candidates"] if x["ticker"] == ticker), {})
             mkt = c.get("market", "")
             s   = sym.get(mkt, "")
             print(f"    BUY {ticker:<12} {s}{amt:,.0f}  "

@@ -82,6 +82,7 @@ def simulate(
         if volatility is None:
             annual_rate = target_roi
         else:
+            assert rng is not None
             annual_rate = float(np.clip(
                 rng.normal(target_roi, volatility),
                 _MIN_ANNUAL_RETURN, _MAX_ANNUAL_RETURN,
