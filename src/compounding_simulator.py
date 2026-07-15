@@ -37,6 +37,61 @@ MILESTONES: dict[str, float] = {
     "10 Cr": 10_00_00_000.0,
 }
 
+# Per-region currency config shared by every UI (desktop + browser): digit
+# grouping, "big unit" for abbreviated display (Crore for INR, Million for
+# USD/EUR), sensible input defaults, and absolute milestone amounts.
+REGION_CONFIG: dict[str, dict] = {
+    "IN": {
+        "flag": "🇮🇳", "name": "India", "symbol": "₹", "grouping": "indian",
+        "big_unit": 1_00_00_000.0, "big_label": "Cr",
+        "default_capital": 1.0, "capital_step": 0.1, "capital_max": 1000.0, "capital_fmt": "%.2f",
+        "default_contribution": 100000.0, "contribution_step": 5000.0,
+        "milestones": {"1 Cr": 1_00_00_000.0, "3 Cr": 3_00_00_000.0, "6 Cr": 6_00_00_000.0, "10 Cr": 10_00_00_000.0},
+    },
+    "US": {
+        "flag": "🇺🇸", "name": "United States", "symbol": "$", "grouping": "western",
+        "big_unit": 1_000_000.0, "big_label": "M",
+        "default_capital": 100_000.0, "capital_step": 10_000.0, "capital_max": 100_000_000.0, "capital_fmt": "%.0f",
+        "default_contribution": 1_000.0, "contribution_step": 100.0,
+        "milestones": {"100K": 100_000.0, "300K": 300_000.0, "600K": 600_000.0, "1M": 1_000_000.0},
+    },
+    "EU": {
+        "flag": "🇪🇺", "name": "Europe", "symbol": "€", "grouping": "western",
+        "big_unit": 1_000_000.0, "big_label": "M",
+        "default_capital": 100_000.0, "capital_step": 10_000.0, "capital_max": 100_000_000.0, "capital_fmt": "%.0f",
+        "default_contribution": 1_000.0, "contribution_step": 100.0,
+        "milestones": {"100K": 100_000.0, "300K": 300_000.0, "600K": 600_000.0, "1M": 1_000_000.0},
+    },
+}
+
+
+def format_amount(amount: float, ccy: dict) -> str:
+    """Full-precision, locale-grouped amount (Indian digit grouping for INR)."""
+    if ccy["grouping"] == "indian":
+        neg = amount < 0
+        whole = f"{abs(amount):,.0f}".replace(",", "")
+        if len(whole) <= 3:
+            grouped = whole
+        else:
+            grouped = whole[-3:]
+            rest = whole[:-3]
+            while rest:
+                grouped = rest[-2:] + "," + grouped
+                rest = rest[:-2]
+        return f"{'-' if neg else ''}{ccy['symbol']}{grouped}"
+    return f"{ccy['symbol']}{amount:,.0f}"
+
+
+def format_amount_abbrev(amount: float, ccy: dict) -> str:
+    """Abbreviated amount for tables/metrics (Cr for INR; K/M for USD/EUR)."""
+    if ccy["grouping"] == "indian":
+        return f"{ccy['symbol']}{amount / ccy['big_unit']:,.2f} {ccy['big_label']}"
+    if abs(amount) >= 1_000_000:
+        return f"{ccy['symbol']}{amount / 1_000_000:,.2f}M"
+    if abs(amount) >= 1_000:
+        return f"{ccy['symbol']}{amount / 1_000:,.1f}K"
+    return f"{ccy['symbol']}{amount:,.0f}"
+
 # Bounds on any single simulated year's return in stress-test mode — keeps
 # an extreme draw from a fat-tailed normal from going non-physical.
 _MIN_ANNUAL_RETURN = -0.60

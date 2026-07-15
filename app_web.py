@@ -1273,31 +1273,10 @@ with T_SIM:
         "Independent of the trading strategies in the other tabs — pure compound-interest mathematics."
     )
 
-    # Per-region currency config: digit grouping, "big unit" for abbreviated display
-    # (Crore for INR, Million for USD/EUR), sensible defaults, and absolute milestone amounts.
-    _SIM_CCY = {
-        "IN": {
-            "flag": "🇮🇳", "name": "India", "symbol": "₹", "grouping": "indian",
-            "big_unit": 1_00_00_000.0, "big_label": "Cr",
-            "default_capital": 1.0, "capital_step": 0.1, "capital_max": 1000.0, "capital_fmt": "%.2f",
-            "default_contribution": 100000.0, "contribution_step": 5000.0,
-            "milestones": {"1 Cr": 1_00_00_000.0, "3 Cr": 3_00_00_000.0, "6 Cr": 6_00_00_000.0, "10 Cr": 10_00_00_000.0},
-        },
-        "US": {
-            "flag": "🇺🇸", "name": "United States", "symbol": "$", "grouping": "western",
-            "big_unit": 1_000_000.0, "big_label": "M",
-            "default_capital": 100_000.0, "capital_step": 10_000.0, "capital_max": 100_000_000.0, "capital_fmt": "%.0f",
-            "default_contribution": 1_000.0, "contribution_step": 100.0,
-            "milestones": {"100K": 100_000.0, "300K": 300_000.0, "600K": 600_000.0, "1M": 1_000_000.0},
-        },
-        "EU": {
-            "flag": "🇪🇺", "name": "Europe", "symbol": "€", "grouping": "western",
-            "big_unit": 1_000_000.0, "big_label": "M",
-            "default_capital": 100_000.0, "capital_step": 10_000.0, "capital_max": 100_000_000.0, "capital_fmt": "%.0f",
-            "default_contribution": 1_000.0, "contribution_step": 100.0,
-            "milestones": {"100K": 100_000.0, "300K": 300_000.0, "600K": 600_000.0, "1M": 1_000_000.0},
-        },
-    }
+    import sys as _sys
+    _sys.path.insert(0, str(ROOT / "src"))
+    from compounding_simulator import REGION_CONFIG as _SIM_CCY
+    from compounding_simulator import format_amount as _fmt_amount, format_amount_abbrev as _fmt_amount_abbrev
 
     def _sim_on_region_change():
         _r = st.session_state["sim_region"]
@@ -1312,20 +1291,6 @@ with T_SIM:
     )
     _ccy = _SIM_CCY[sim_region]
 
-    def _fmt_indian_grouped(amount: float) -> str:
-        """Indian digit grouping (1,00,000 style)."""
-        neg = amount < 0
-        whole = f"{abs(amount):,.0f}".replace(",", "")
-        if len(whole) <= 3:
-            grouped = whole
-        else:
-            grouped = whole[-3:]
-            rest = whole[:-3]
-            while rest:
-                grouped = rest[-2:] + "," + grouped
-                rest = rest[:-2]
-        return f"{'-' if neg else ''}{_ccy['symbol']}{grouped}"
-
     def _esc_md(s: str) -> str:
         """Escape $ so Streamlit's markdown/KaTeX renderer doesn't mangle it
         (a bare $ opens inline math mode in st.caption/markdown/info/help)."""
@@ -1333,11 +1298,7 @@ with T_SIM:
 
     def _fmt_full(amount: float) -> str:
         """Full-precision amount, locale-grouped, markdown-safe (for captions/help text)."""
-        if _ccy["grouping"] == "indian":
-            out = _fmt_indian_grouped(amount)
-        else:
-            out = f"{_ccy['symbol']}{amount:,.0f}"
-        return _esc_md(out)
+        return _esc_md(_fmt_amount(amount, _ccy))
 
     # ── Inputs
     _sim_c1, _sim_c2, _sim_c3, _sim_c4 = st.columns(4)
@@ -1460,31 +1421,13 @@ with T_SIM:
         _sim_df, _r_ccy = _res["df"], _res["ccy"]
 
         def _r_fmt_full(amount: float) -> str:
-            if _r_ccy["grouping"] == "indian":
-                neg = amount < 0
-                whole = f"{abs(amount):,.0f}".replace(",", "")
-                if len(whole) <= 3:
-                    grouped = whole
-                else:
-                    grouped = whole[-3:]
-                    rest = whole[:-3]
-                    while rest:
-                        grouped = rest[-2:] + "," + grouped
-                        rest = rest[:-2]
-                return f"{'-' if neg else ''}{_r_ccy['symbol']}{grouped}"
-            return f"{_r_ccy['symbol']}{amount:,.0f}"
+            return _fmt_amount(amount, _r_ccy)
 
         def _r_fmt_big(amount: float) -> str:
             """Abbreviated amount for tables/metrics/prose. INR always shows in Cr
             (the idiomatic unit regardless of magnitude); USD/EUR switch between K
             and M so a $100K capital doesn't read as the awkward '$0.10 M'."""
-            if _r_ccy["grouping"] == "indian":
-                return f"{_r_ccy['symbol']}{amount / _r_ccy['big_unit']:,.2f} {_r_ccy['big_label']}"
-            if abs(amount) >= 1_000_000:
-                return f"{_r_ccy['symbol']}{amount / 1_000_000:,.2f}M"
-            if abs(amount) >= 1_000:
-                return f"{_r_ccy['symbol']}{amount / 1_000:,.1f}K"
-            return f"{_r_ccy['symbol']}{amount:,.0f}"
+            return _fmt_amount_abbrev(amount, _r_ccy)
 
         def _r_esc_md(s: str) -> str:
             """Escape $ for markdown/KaTeX contexts (st.caption/markdown/info/metric label)."""

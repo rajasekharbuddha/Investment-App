@@ -20,7 +20,7 @@ import pandas as pd
 
 try:
     import tkinter as tk
-    from tkinter import ttk, messagebox
+    from tkinter import ttk, messagebox, filedialog
 except ImportError:
     print("ERROR: tkinter not found. Reinstall Python and make sure 'tcl/tk' is checked.")
     sys.exit(1)
@@ -194,6 +194,7 @@ class App(tk.Tk):
             ("backtest",    "  Backtest  ",        self._tab_backtest),
             ("longterm",    "  Long-Term  ",       self._tab_longterm),
             ("sip",         "  SIP Plan  ",        self._tab_sip),
+            ("compounding", "  Compounding Sim  ", self._tab_compounding),
             ("portfolio",   "  Portfolio  ",       self._tab_portfolio),
             ("reports",     "  Reports  ",         self._tab_reports),
             ("replacement", "  Bench List  ",      self._tab_replacement),
@@ -1780,6 +1781,415 @@ class App(tk.Tk):
             self._busy = False
             self.after(0, lambda: self._sip_bt_btn.configure(state="normal", text="▶  Run Backtest"))
             self.after(0, lambda: self._status.set(f"SIP backtest complete — {datetime.now().strftime('%H:%M:%S')}"))
+
+    def _tab_compounding(self, parent):
+        from matplotlib.figure import Figure
+        from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+        from compounding_simulator import REGION_CONFIG
+
+        self._sim_ccy_cfg = REGION_CONFIG
+        self._sim_results: dict | None = None
+
+        canvas = tk.Canvas(parent, bg=self.BG, highlightthickness=0)
+        vsb    = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+
+        f = tk.Frame(canvas, bg=self.BG, padx=14, pady=12)
+        win = canvas.create_window((0, 0), window=f, anchor="nw")
+
+        def _resize(event):
+            canvas.itemconfig(win, width=event.width)
+        canvas.bind("<Configure>", _resize)
+        f.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+
+        tk.Label(f, text="Financial Compounding Simulator",
+                 bg=self.BG, fg=self.ACCENT, font=(_MONO, 13, "bold")
+                 ).pack(anchor="w", pady=(0, 4))
+        tk.Label(f,
+                 text="Two-phase wealth model — Phase 1 'Matching Velocity' (contributions matching the lump\n"
+                      "sum's organic growth) then Phase 2 'Pure Compounding' (contributions drop to zero).\n"
+                      "Independent of the trading strategies elsewhere in this app — pure compound-interest math.",
+                 bg=self.BG, fg=self.MUTED, font=(_MONO, 9), justify="left", anchor="w"
+                 ).pack(anchor="w", pady=(0, 12))
+
+        bar = tk.Frame(f, bg=self.BG)
+        bar.pack(fill="x")
+        self._sim_region   = self._combo(bar, "Region:", ["IN", "US", "EU"], "IN", 5)
+        self._sim_capital  = self._entry(bar, "Capital:", "10000000", 12)
+        self._sim_roi      = self._entry(bar, "ROI %:", "12.0", 6)
+        self._sim_p1y      = self._entry(bar, "P1 years:", "6", 5)
+        self._sim_p2y      = self._entry(bar, "P2 years:", "10", 5)
+        self._sim_region.trace_add("write", lambda *_: self._sim_apply_region_defaults())
+
+        bar2 = tk.Frame(f, bg=self.BG)
+        bar2.pack(fill="x", pady=(6, 0))
+        self._sim_contrib = self._entry(bar2, "P1 monthly contribution:", "100000", 12)
+        self._button(bar2, "↺ Match auto", self._sim_match_auto).pack(side="left", padx=(4, 0))
+
+        bar3 = tk.Frame(f, bg=self.BG)
+        bar3.pack(fill="x", pady=(6, 0))
+        self._sim_mode = tk.StringVar(value="flat")
+        tk.Radiobutton(bar3, text="Flat ROI (deterministic)", variable=self._sim_mode, value="flat",
+                       bg=self.BG, fg=self.TEXT, selectcolor=self.SURFACE,
+                       activebackground=self.BG, activeforeground=self.ACCENT,
+                       font=(_MONO, 9)).pack(side="left", padx=(0, 12))
+        tk.Radiobutton(bar3, text="Stress Test (volatility)", variable=self._sim_mode, value="stress",
+                       bg=self.BG, fg=self.TEXT, selectcolor=self.SURFACE,
+                       activebackground=self.BG, activeforeground=self.ACCENT,
+                       font=(_MONO, 9)).pack(side="left", padx=(0, 16))
+        self._sim_vol    = self._entry(bar3, "Vol %:", "15", 5)
+        self._sim_nsims  = self._entry(bar3, "N sims:", "500", 6)
+
+        bar4 = tk.Frame(f, bg=self.BG)
+        bar4.pack(fill="x", pady=(10, 4))
+        self._sim_btn = self._button(bar4, "▶  Run Simulation", self._run_compounding)
+        self._sim_btn.pack(side="left")
+        self._button(bar4, "Clear", self._clear_compounding, w=6).pack(side="left", padx=(8, 0))
+        self._button(bar4, "⬇  Export Ledger CSV", self._export_compounding_csv
+                     ).pack(side="left", padx=(8, 0))
+
+        sep = tk.Frame(f, bg=self.SURFACE, height=1)
+        sep.pack(fill="x", pady=(10, 10))
+
+        tk.Label(f, text="Executive Summary", bg=self.BG, fg=self.ACCENT,
+                 font=(_MONO, 11, "bold")).pack(anchor="w")
+        self._sim_exec_lbl = tk.Label(f, text="Run a simulation to see results.",
+                                      bg=self.BG, fg=self.MUTED, font=(_MONO, 9),
+                                      justify="left", anchor="w")
+        self._sim_exec_lbl.pack(anchor="w", pady=(2, 10))
+
+        self._sim_ms_lbl = tk.Label(f, text="", bg=self.BG, fg=self.TEXT,
+                                    font=(_MONO, 9), justify="left", anchor="w")
+        self._sim_ms_lbl.pack(anchor="w")
+
+        self._sim_r72_lbl = tk.Label(f, text="", bg=self.BG, fg=self.MUTED,
+                                     font=(_MONO, 9), justify="left", anchor="w", wraplength=1000)
+        self._sim_r72_lbl.pack(anchor="w", pady=(4, 10))
+
+        self._sim_fig = Figure(figsize=(8, 3.6), dpi=100, facecolor=self.BG2)
+        self._sim_ax  = self._sim_fig.add_subplot(111)
+        self._style_sim_axis(self._sim_ax)
+        self._sim_canvas = FigureCanvasTkAgg(self._sim_fig, master=f)
+        self._sim_canvas.get_tk_widget().pack(fill="x", pady=(0, 10))
+
+        ledger_hdr = tk.Frame(f, bg=self.BG)
+        ledger_hdr.pack(fill="x")
+        tk.Label(ledger_hdr, text="Ledger", bg=self.BG, fg=self.ACCENT,
+                 font=(_MONO, 11, "bold")).pack(side="left")
+        self._sim_ledger_view = tk.StringVar(value="Yearly")
+        for val in ("Yearly", "Monthly"):
+            tk.Radiobutton(ledger_hdr, text=val, variable=self._sim_ledger_view, value=val,
+                           bg=self.BG, fg=self.TEXT, selectcolor=self.SURFACE,
+                           activebackground=self.BG, activeforeground=self.ACCENT,
+                           font=(_MONO, 9), command=self._render_compounding_ledger,
+                           ).pack(side="left", padx=(12, 0))
+
+        ledger_frame = tk.Frame(f, bg=self.BG)
+        ledger_frame.pack(fill="both", expand=True, pady=(4, 10))
+
+        lstyle = ttk.Style()
+        lstyle.configure("Sim.Treeview",
+                         background=self.BG2, foreground=self.TEXT,
+                         fieldbackground=self.BG2, font=(_MONO, 9),
+                         rowheight=20, borderwidth=0)
+        lstyle.configure("Sim.Treeview.Heading",
+                         background=self.SURFACE, foreground=self.ACCENT,
+                         font=(_MONO, 9, "bold"), relief="flat")
+
+        ledger_cols = ("Year", "Month", "Phase", "Start", "Contribution", "Growth", "End")
+        self._sim_ledger_tree = ttk.Treeview(
+            ledger_frame, columns=ledger_cols, show="headings",
+            height=10, style="Sim.Treeview", selectmode="browse")
+        for c in ledger_cols:
+            self._sim_ledger_tree.heading(c, text=c)
+            self._sim_ledger_tree.column(c, width=110, anchor="center", stretch=True)
+        lvsb = ttk.Scrollbar(ledger_frame, orient="vertical", command=self._sim_ledger_tree.yview)
+        self._sim_ledger_tree.configure(yscrollcommand=lvsb.set)
+        self._sim_ledger_tree.pack(side="left", fill="both", expand=True)
+        lvsb.pack(side="right", fill="y")
+
+        # Stress-test section — only packed into view after a stress-mode run.
+        self._sim_stress_frame = tk.Frame(f, bg=self.BG)
+
+        tk.Label(self._sim_stress_frame, text="Stress Test — Sequence-of-Returns Risk",
+                 bg=self.BG, fg=self.ACCENT, font=(_MONO, 11, "bold")
+                 ).pack(anchor="w", pady=(4, 2))
+        self._sim_stress_lbl = tk.Label(self._sim_stress_frame, text="",
+                                        bg=self.BG, fg=self.TEXT, font=(_MONO, 9),
+                                        justify="left", anchor="w")
+        self._sim_stress_lbl.pack(anchor="w")
+
+        self._sim_hist_fig = Figure(figsize=(8, 3.0), dpi=100, facecolor=self.BG2)
+        self._sim_hist_ax  = self._sim_hist_fig.add_subplot(111)
+        self._style_sim_axis(self._sim_hist_ax)
+        self._sim_hist_canvas = FigureCanvasTkAgg(self._sim_hist_fig, master=self._sim_stress_frame)
+        self._sim_hist_canvas.get_tk_widget().pack(fill="x", pady=(6, 6))
+
+        self._sim_insight_lbl = tk.Label(self._sim_stress_frame, text="",
+                                         bg=self.BG, fg=self.MUTED, font=(_MONO, 9),
+                                         justify="left", anchor="w", wraplength=1000)
+        self._sim_insight_lbl.pack(anchor="w", pady=(0, 10))
+
+        self._sim_apply_region_defaults()
+
+    def _style_sim_axis(self, ax):
+        ax.set_facecolor(self.BG2)
+        for spine in ax.spines.values():
+            spine.set_color(self.MUTED)
+        ax.tick_params(colors=self.MUTED, labelsize=8)
+        ax.xaxis.label.set_color(self.MUTED)
+        ax.yaxis.label.set_color(self.MUTED)
+        ax.grid(True, color=self.SURFACE, linewidth=0.6)
+
+    def _sim_apply_region_defaults(self):
+        ccy = self._sim_ccy_cfg[self._sim_region.get()]
+        cap = ccy["default_capital"]
+        if ccy["grouping"] == "indian":
+            cap *= ccy["big_unit"]
+        self._sim_capital.set(f"{cap:.0f}")
+        self._sim_contrib.set(f"{ccy['default_contribution']:.0f}")
+
+    def _sim_match_auto(self):
+        try:
+            capital = float(self._sim_capital.get())
+            roi     = float(self._sim_roi.get()) / 100.0
+        except ValueError:
+            return
+        auto = round(capital * roi / 12.0, -2)
+        self._sim_contrib.set(f"{auto:.0f}")
+
+    def _run_compounding(self):
+        if self._check_busy():
+            return
+        region = self._sim_region.get()
+        try:
+            capital      = float(self._sim_capital.get())
+            roi_pct      = float(self._sim_roi.get())
+            p1y          = int(self._sim_p1y.get())
+            p2y          = int(self._sim_p2y.get())
+            contribution = float(self._sim_contrib.get())
+            vol_pct      = float(self._sim_vol.get())
+            n_sims       = int(self._sim_nsims.get())
+        except ValueError:
+            messagebox.showerror("Invalid input", "Please check that all fields contain valid numbers.")
+            return
+
+        self._busy = True
+        self._sim_btn.configure(state="disabled", text="Running…")
+        self._status.set("Running compounding simulation…")
+        mode = self._sim_mode.get()
+        threading.Thread(
+            target=self._worker_compounding,
+            args=(region, capital, roi_pct, p1y, p2y, contribution, mode, vol_pct, n_sims),
+            daemon=True).start()
+
+    def _worker_compounding(self, region, capital, roi_pct, p1y, p2y,
+                            contribution, mode, vol_pct, n_sims):
+        try:
+            from compounding_simulator import (
+                simulate, rule_of_72_check, milestone_crossings, monte_carlo,
+                executive_summary,
+            )
+
+            ccy = self._sim_ccy_cfg[region]
+            target_roi = roi_pct / 100.0
+
+            df = simulate(
+                initial_capital=capital, target_roi=target_roi,
+                phase1_years=p1y, phase2_years=p2y,
+                phase1_monthly_contribution=contribution,
+            )
+            milestones_hit = milestone_crossings(df, ccy["milestones"])
+            r72 = rule_of_72_check(target_roi)
+            exec_df = executive_summary(df)
+
+            mc = None
+            if mode == "stress":
+                goal = list(ccy["milestones"].values())[-1]
+                mc = monte_carlo(
+                    initial_capital=capital, target_roi=target_roi,
+                    phase1_years=p1y, phase2_years=p2y,
+                    phase1_monthly_contribution=contribution,
+                    volatility=vol_pct / 100.0, n_sims=n_sims, goal=goal,
+                )
+
+            results = {
+                "df": df, "exec_df": exec_df, "milestones_hit": milestones_hit,
+                "r72": r72, "mc": mc, "ccy": ccy, "region": region,
+                "roi_pct": roi_pct, "p1_years": p1y, "p2_years": p2y,
+                "mode": mode, "vol_pct": vol_pct, "n_sims": n_sims,
+            }
+            self.after(0, lambda: self._update_compounding_ui(results))
+        except Exception as exc:
+            import traceback
+            tb = traceback.format_exc()
+            self.after(0, lambda: messagebox.showerror("Simulation error", f"{exc}\n\n{tb}"))
+        finally:
+            self._busy = False
+            self.after(0, lambda: self._sim_btn.configure(state="normal", text="▶  Run Simulation"))
+            self.after(0, lambda: self._status.set(
+                f"Compounding simulation complete — {datetime.now().strftime('%H:%M:%S')}"))
+
+    def _update_compounding_ui(self, results: dict):
+        from compounding_simulator import format_amount, format_amount_abbrev
+        self._sim_results = results
+        ccy = results["ccy"]
+
+        exec_lines = [f"  Year {int(r['Year']):>2}: {format_amount_abbrev(r['Balance'], ccy)}"
+                      for _, r in results["exec_df"].iterrows()]
+        self._sim_exec_lbl.configure(text="\n".join(exec_lines))
+
+        ms_parts = [f"{label}: {yr:.2f} yr" if yr is not None else f"{label}: not reached"
+                   for label, yr in results["milestones_hit"].items()]
+        self._sim_ms_lbl.configure(text="Milestones — " + "   ".join(ms_parts))
+
+        r72 = results["r72"]
+        self._sim_r72_lbl.configure(text=(
+            f"Rule of 72 — theoretical doubling time at {results['roi_pct']:.1f}% ROI: "
+            f"72 ÷ {results['roi_pct']:.1f} = {r72['theoretical_years']:.2f} years.  "
+            f"Actual monthly-compounded doubling time: {r72['actual_years']:.2f} years "
+            f"({r72['difference_years']:+.2f} yr vs. the approximation)."
+        ))
+
+        df = results["df"]
+        ax = self._sim_ax
+        ax.clear()
+        self._style_sim_axis(ax)
+        p1_df = df[df["Phase"] == 1]
+        p2_df = df[df["Phase"] == 2]
+        ax.plot(p1_df["GlobalMonth"] / 12.0, p1_df["EndingBalance"] / ccy["big_unit"],
+               color=self.RED, linewidth=2, label="Phase 1 — Matching Velocity")
+        ax.plot(p2_df["GlobalMonth"] / 12.0, p2_df["EndingBalance"] / ccy["big_unit"],
+               color=self.ACCENT, linewidth=2, label="Phase 2 — Pure Compounding")
+        for label, amount in ccy["milestones"].items():
+            ax.axhline(amount / ccy["big_unit"], color=self.MUTED, linestyle=":", linewidth=0.8)
+            ax.annotate(f"{ccy['symbol']}{label}", xy=(df["GlobalMonth"].iloc[-1] / 12.0,
+                        amount / ccy["big_unit"]), color=self.MUTED, fontsize=7, ha="right", va="bottom")
+        ax.set_xlabel("Years")
+        ax.set_ylabel(f"Portfolio Value ({ccy['symbol']} {ccy['big_label']})")
+        legend = ax.legend(loc="upper left", fontsize=8, facecolor=self.BG2, edgecolor=self.SURFACE)
+        for text in legend.get_texts():
+            text.set_color(self.TEXT)
+        self._sim_fig.tight_layout()
+        self._sim_canvas.draw()
+
+        self._render_compounding_ledger()
+
+        if results["mode"] == "stress" and results["mc"] is not None:
+            self._sim_stress_frame.pack(fill="x")
+            mc = results["mc"]
+            goal_label, goal_amount = list(ccy["milestones"].items())[-1]
+            median_delta = mc["percentiles"]["p50"] - df["EndingBalance"].iloc[-1]
+            median_yrs_str = (f"{mc['median_years_to_goal']:.1f} yr"
+                              if mc["median_years_to_goal"] else "—")
+
+            self._sim_stress_lbl.configure(text=(
+                f"Success rate (reach {ccy['symbol']}{goal_label}): {mc['success_rate']*100:.1f}%   "
+                f"Median final balance: {format_amount_abbrev(mc['percentiles']['p50'], ccy)}   "
+                f"Median years to goal: {median_yrs_str}\n"
+                f"Percentiles — p5: {format_amount_abbrev(mc['percentiles']['p5'], ccy)}   "
+                f"p25: {format_amount_abbrev(mc['percentiles']['p25'], ccy)}   "
+                f"p50: {format_amount_abbrev(mc['percentiles']['p50'], ccy)}   "
+                f"p75: {format_amount_abbrev(mc['percentiles']['p75'], ccy)}   "
+                f"p95: {format_amount_abbrev(mc['percentiles']['p95'], ccy)}"
+            ))
+
+            hax = self._sim_hist_ax
+            hax.clear()
+            self._style_sim_axis(hax)
+            hax.hist(mc["final_balances"] / ccy["big_unit"], bins=40,
+                    color=self.ACCENT, alpha=0.85)
+            hax.axvline(goal_amount / ccy["big_unit"], color=self.RED, linestyle="--",
+                       linewidth=1.2, label=f"{ccy['symbol']}{goal_label} goal")
+            hax.axvline(df["EndingBalance"].iloc[-1] / ccy["big_unit"], color=self.MUTED,
+                       linestyle=":", linewidth=1.2, label="Flat-ROI baseline")
+            hax.set_xlabel(f"Final Portfolio Value ({ccy['symbol']} {ccy['big_label']})")
+            hax.set_ylabel("Simulations")
+            hlegend = hax.legend(loc="upper right", fontsize=8, facecolor=self.BG2, edgecolor=self.SURFACE)
+            for text in hlegend.get_texts():
+                text.set_color(self.TEXT)
+            self._sim_hist_fig.tight_layout()
+            self._sim_hist_canvas.draw()
+
+            self._sim_insight_lbl.configure(text=(
+                f"Strategic insight: across {results['n_sims']} randomized {results['vol_pct']:.0f}%-volatility "
+                f"paths, only {mc['success_rate']*100:.1f}% reach the {ccy['symbol']}{goal_label} goal within the "
+                f"{results['p1_years']+results['p2_years']}-year window, versus the flat-ROI baseline of "
+                f"{format_amount_abbrev(df['EndingBalance'].iloc[-1], ccy)}. The median outcome "
+                f"({format_amount_abbrev(mc['percentiles']['p50'], ccy)}) sits "
+                f"{'below' if median_delta < 0 else 'above'} the deterministic baseline by "
+                f"{format_amount_abbrev(abs(median_delta), ccy)} — a volatility-drag effect: a return stream "
+                f"with the same average annual return as the flat case compounds to a lower typical outcome "
+                f"once year-to-year variance is introduced."
+            ))
+        else:
+            self._sim_stress_frame.pack_forget()
+
+    def _render_compounding_ledger(self):
+        if self._sim_results is None:
+            return
+        from compounding_simulator import format_amount
+        df  = self._sim_results["df"]
+        ccy = self._sim_results["ccy"]
+
+        for item in self._sim_ledger_tree.get_children():
+            self._sim_ledger_tree.delete(item)
+
+        if self._sim_ledger_view.get() == "Yearly":
+            ledger = df.groupby("Year").agg(
+                Phase=("Phase", "first"),
+                StartingBalance=("StartingBalance", "first"),
+                ActiveContribution=("Contribution", "sum"),
+                GrowthEarned=("GrowthEarned", "sum"),
+                EndingBalance=("EndingBalance", "last"),
+            ).reset_index()
+            for _, r in ledger.iterrows():
+                phase_lbl = "1 — Matching Velocity" if r["Phase"] == 1 else "2 — Pure Compounding"
+                self._sim_ledger_tree.insert("", "end", values=(
+                    int(r["Year"]), "—", phase_lbl,
+                    format_amount(r["StartingBalance"], ccy),
+                    format_amount(r["ActiveContribution"], ccy),
+                    format_amount(r["GrowthEarned"], ccy),
+                    format_amount(r["EndingBalance"], ccy),
+                ))
+        else:
+            for _, r in df.iterrows():
+                phase_lbl = "1 — Matching Velocity" if r["Phase"] == 1 else "2 — Pure Compounding"
+                self._sim_ledger_tree.insert("", "end", values=(
+                    int(r["Year"]), int(r["Month"]), phase_lbl,
+                    format_amount(r["StartingBalance"], ccy),
+                    format_amount(r["Contribution"], ccy),
+                    format_amount(r["GrowthEarned"], ccy),
+                    format_amount(r["EndingBalance"], ccy),
+                ))
+
+    def _clear_compounding(self):
+        self._sim_results = None
+        self._sim_exec_lbl.configure(text="Run a simulation to see results.")
+        self._sim_ms_lbl.configure(text="")
+        self._sim_r72_lbl.configure(text="")
+        self._sim_ax.clear()
+        self._style_sim_axis(self._sim_ax)
+        self._sim_canvas.draw()
+        for item in self._sim_ledger_tree.get_children():
+            self._sim_ledger_tree.delete(item)
+        self._sim_stress_frame.pack_forget()
+
+    def _export_compounding_csv(self):
+        if self._sim_results is None:
+            messagebox.showinfo("No results", "Run a simulation first.")
+            return
+        path = filedialog.asksaveasfilename(
+            defaultextension=".csv",
+            initialfile="compounding_ledger.csv",
+            filetypes=[("CSV files", "*.csv")],
+        )
+        if not path:
+            return
+        self._sim_results["df"].round(2).to_csv(path, index=False)
+        self._status.set(f"Ledger exported → {path}")
 
     def _run_longterm(self):
         if self._check_busy():
