@@ -5,7 +5,8 @@ Dynamic universe builder with caching.
 - US: S&P 500 constituents (GitHub datasets)           ~503 tickers
 - EU: DAX40 + FTSE100 + FTSEMIB40 (yfiua) +           ~257 tickers
       CAC40 / AEX / SMI / IBEX35 (static supplement)
-- IN: Nifty Large+MidCap 250 (niftyindices.com)        ~254 tickers
+- IN: Nifty 500 (niftyindices.com)                     ~500 tickers
+      falls back to Nifty Large+MidCap 250, then Nifty 100
 
 Cached under ../universes/. Uses cached if fresh; downloads if stale;
 falls back to stale if download fails.
@@ -25,7 +26,8 @@ UNIVERSE_DIR = Path(__file__).parent.parent / "universes"
 UNIVERSE_DIR.mkdir(exist_ok=True)
 
 SP500_URL       = "https://raw.githubusercontent.com/datasets/s-and-p-500-companies/main/data/constituents.csv"
-NIFTY250_URL    = "https://www.niftyindices.com/IndexConstituent/ind_niftylargemidcap250list.csv"
+NIFTY500_URL    = "https://www.niftyindices.com/IndexConstituent/ind_nifty500list.csv"
+NIFTY250_URL    = "https://www.niftyindices.com/IndexConstituent/ind_niftylargemidcap250list.csv"  # fallback
 NIFTY100_URL    = "https://www.niftyindices.com/IndexConstituent/ind_nifty100list.csv"  # fallback
 YFIUA_URL       = "https://yfiua.github.io/index-constituents/constituents-{code}.csv"
 
@@ -214,8 +216,12 @@ def build_us_universe(max_age_days: int = 7) -> Dict[str, dict]:
 
 
 def build_in_universe(max_age_days: int = 7) -> Dict[str, dict]:
-    """Download Nifty 250; fall back to Nifty 100 if unavailable."""
+    """Download Nifty 500 (~500 tickers); fall back to Nifty Large+MidCap 250,
+    then Nifty 100, if the wider list is unavailable. Using the broadest list
+    as the primary source means a Top-N IN setting above ~250 actually has a
+    larger pool to draw from instead of being silently capped by the index."""
     for url, cache_name in [
+        (NIFTY500_URL, "IN_nifty500.csv"),
         (NIFTY250_URL, "IN_nifty250.csv"),
         (NIFTY100_URL, "IN_nifty100.csv"),
     ]:

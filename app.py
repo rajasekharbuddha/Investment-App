@@ -2575,6 +2575,11 @@ class App(tk.Tk):
             mf_pct = -5.0
         momentum_floor = mf_pct / 100.0  # -5 -> -0.05
 
+        try:
+            top_n = int(self._lt_topn.get().strip())
+        except ValueError:
+            top_n = 250
+
         self._clear(self._lt_out)
         self._target = self._lt_out
         self._busy   = True
@@ -2590,13 +2595,14 @@ class App(tk.Tk):
                 reb_days,
                 self._ltbt_breakdown.get(),
                 momentum_floor,
+                top_n,
             ),
             daemon=True,
         ).start()
 
     def _worker_lt_backtest(self, market: str, start: str, end: str,
                             slots: int, rebalance_days: int, exit_on_breakdown: bool,
-                            momentum_floor: float = -0.05):
+                            momentum_floor: float = -0.05, top_n_in: int = 250):
         import contextlib
         w = _QWriter(self._q)
         self._apply_settings_to_config()
@@ -2622,8 +2628,8 @@ class App(tk.Tk):
                 if use_dyn:
                     from universe import get_dynamic_watchlist
                     score_top_n = DYNAMIC_UNIVERSE.get("SCORE_TOP_N", {})
-                    top_n_mkt   = {market: score_top_n.get(
-                                       market, 250 if market == "IN" else 200)}
+                    default_n   = top_n_in if market == "IN" else score_top_n.get(market, 200)
+                    top_n_mkt   = {market: default_n}
                     w.write(f"[1/3] Building dynamic universe (top-{top_n_mkt[market]})...\n")
                     wl = get_dynamic_watchlist(
                         [market], top_n_mkt,
