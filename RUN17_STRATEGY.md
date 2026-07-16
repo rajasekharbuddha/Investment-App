@@ -4,13 +4,22 @@
 Last validated: June 2026 (10-year backtest, 22 runs)
 Do not change any parameter below without re-running the full 10-year backtest.
 
+> **Universe-source caveat (2026-07-17):** `src/universe.py`'s IN dynamic universe now sources
+> **Nifty 500** first (falling back to Nifty 250, then Nifty 100, only if that fetch fails) — see
+> `CLAUDE.md` for why. The gate/sizing parameters below are unaffected, but the results in §2 were
+> validated against the Nifty-250-only pool; drawing "top 250 by score" from a 500-stock pool
+> instead of a 250-stock one can select a different subset of tickers. Per the policy above, this
+> is exactly the kind of universe change that should get a fresh 10-year backtest before being
+> treated as re-validated — flagging it here rather than silently leaving the numbers to look
+> current when the input universe has changed.
+
 ---
 
 ## 1. What Is Run 17?
 
 Run 17 is the 17th and final iteration of a systematic ATR-dynamic trend-following strategy backtested over a 10-year period (Jan 2016 – May 2026) on Indian equities. It was reached after 22 sequential backtesting runs, each testing one change at a time. Every parameter in this document was explicitly tested and locked because it produced the best risk-adjusted return across the full decade.
 
-The system trades a rotating quality-filtered universe of Nifty 250 stocks, enters on multi-gate confirmation, and exits via a ratcheting ATR-based trailing stop.
+The system trades a rotating quality-filtered universe of the top 250 (by score) Nifty-sourced stocks, enters on multi-gate confirmation, and exits via a ratcheting ATR-based trailing stop.
 
 ---
 
@@ -96,7 +105,7 @@ Used when dynamic universe is unavailable.
 
 ### Dynamic Universe (Live Mode)
 - Enabled by default
-- Sources Nifty 250 constituents
+- Sources Nifty 500 constituents (falls back to Nifty 250, then Nifty 100, only if that fetch fails — see caveat at the top of this document)
 - Quality-scores all stocks, keeps top 250 by score
 - Refreshed every 7 days
 - Min quality score to enter: 35 (excludes "Drag" stocks)

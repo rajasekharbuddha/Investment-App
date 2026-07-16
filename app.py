@@ -346,6 +346,7 @@ class App(tk.Tk):
                                        ["IN", "US,EU,IN", "US", "EU", "US,IN"], "IN", 10)
         self._lt_minq    = self._entry(bar, "Min-Q:", "55", 4)
         self._lt_topn    = self._entry(bar, "Top-N IN:", "250", 5)
+        self._lt_slots   = self._entry(bar, "Slots:", "10", 4)
 
         self._lt_near = tk.BooleanVar(value=True)
         tk.Checkbutton(bar, text="Include NEAR", variable=self._lt_near,
@@ -655,9 +656,44 @@ class App(tk.Tk):
                 except Exception:
                     pass
 
-        self.after(0, lambda: self._update_portfolio_ui(st_positions, lt_positions, prices))
+        # Exit Watch (technical breakdown-confirmation + fundamental thresholds
+        # captured at entry) for held long-term positions only -- short-term
+        # positions already get a hard numeric stop from the trailing-stop logic.
+        lt_exit_watch: dict = {}
+        if lt_positions:
+            from data import fetch_history
+            from indicators import calculate_all
+            from fundamental import fetch_fundamentals
+            from run_longterm import check_lt_exit, _consecutive_days_breakdown
 
-    def _update_portfolio_ui(self, st_positions: list, lt_positions: list, prices: dict):
+            for pos in lt_positions:
+                t = pos["ticker"]
+                sma50 = sma200 = None
+                days_bd = 0
+                try:
+                    df = fetch_history(t, years=2)
+                    if df is not None and len(df) >= 200:
+                        ind    = calculate_all(df)
+                        sma50  = float(ind["SMA_50"].iloc[-1])
+                        sma200 = float(ind["SMA_200"].iloc[-1])
+                        days_bd = _consecutive_days_breakdown(ind["SMA_50"], ind["SMA_200"])
+                except Exception:
+                    pass
+                fund = None
+                try:
+                    fund = fetch_fundamentals(t, use_cache=True)
+                except Exception:
+                    pass
+                lt_exit_watch[t] = check_lt_exit(
+                    pos, price=prices.get(t), sma50=sma50, sma200=sma200,
+                    days_below_sma200=days_bd, fund_data=fund,
+                )
+
+        self.after(0, lambda: self._update_portfolio_ui(st_positions, lt_positions, prices, lt_exit_watch))
+
+    def _update_portfolio_ui(self, st_positions: list, lt_positions: list, prices: dict,
+                             lt_exit_watch: "dict | None" = None):
+        lt_exit_watch = lt_exit_watch or {}
         _CURR = self._port_curr
         today = datetime.now().date()
         all_alerts: list[str] = []
@@ -719,6 +755,14 @@ class App(tk.Tk):
                     else:
                         status = "Safe"; tag = "safe"
 
+                    exit_watch = lt_exit_watch.get(ticker) if strat_key == "lt" else None
+                    if exit_watch and status != "STOP HIT":
+                        if exit_watch["verdict"] == "SELL":
+                            status = "EXIT SIGNAL"; tag = "stop_hit"
+                            alerts.append(f"Exit signal  {ticker}: {exit_watch['reasons'][0]}")
+                        elif exit_watch["verdict"] == "WATCH" and status == "Safe":
+                            status = "WATCH"; tag = "near_stop"
+
                     r_str    = f"{r_mul:.2f}R" if r_mul == r_mul else "—"
                     live_str = f"{sym}{cur_px:.2f}"
                     pnl_str  = f"{sym}{pnl:+.0f}"
@@ -727,9 +771,10 @@ class App(tk.Tk):
 
                     lt_line = ""
                     if strat_key == "lt":
+                        exit_reasons = "; ".join(exit_watch["reasons"]) if exit_watch else "not yet checked"
                         lt_line = (f"  LT Score: {pos.get('lt_combined','?')}  "
-                                   f"Grade: {pos.get('lt_grade','?')}  "
-                                   f"[Exit: SMA_200 cross]\n")
+                                   f"Grade: {pos.get('lt_grade','?')}\n"
+                                   f"  Exit Watch: {exit_reasons}\n")
                     detail = (
                         f"\n{'─'*58}\n"
                         f"  {ticker} ({market})  |  {days}d held  |  {status}"
@@ -2502,12 +2547,18 @@ class App(tk.Tk):
         except ValueError:
             messagebox.showerror("Invalid input", "Top-N IN must be an integer (e.g. 250)")
             return
+        try:
+            slots = int(self._lt_slots.get().strip())
+        except ValueError:
+            messagebox.showerror("Invalid input", "Slots must be an integer (e.g. 10)")
+            return
 
         self._clear(self._lt_out)
         self._target = self._lt_out
         self._busy   = True
         self._lt_btn.configure(state="disabled", text="Running...")
         self._status.set("Running long-term screener...")
+        equity = float(self._settings.get("account_size", 100_000))
         threading.Thread(
             target=self._worker_longterm,
             args=(
@@ -2516,12 +2567,15 @@ class App(tk.Tk):
                 self._lt_near.get(),
                 self._lt_refresh.get(),
                 top_n,
+                equity,
+                slots,
             ),
             daemon=True,
         ).start()
 
     def _worker_longterm(self, markets: str, min_q: int, include_near: bool,
-                         refresh_cache: bool, top_n_in: int):
+                         refresh_cache: bool, top_n_in: int,
+                         equity: float = 100_000.0, max_positions: int = 10):
         import contextlib, io, re as _re
         w = _QWriter(self._q)
         self._apply_settings_to_config()
@@ -2536,6 +2590,8 @@ class App(tk.Tk):
                     include_near  = include_near,
                     refresh_cache = refresh_cache,
                     top_n_in      = top_n_in,
+                    equity        = equity,
+                    max_positions = max_positions,
                 )
             # Save plain-text copy to reports/
             plain = _re.sub(r"\x1b\[[0-9;]*m", "", buf.getvalue())

@@ -521,7 +521,17 @@ Identifies fundamentally strong stocks for multi-month to multi-year holds.
 ```bash
 python src/run_longterm.py --markets IN --min-q 55 --top-n-in 250
 python src/run_longterm.py --markets US,EU,IN --no-near
+python src/run_longterm.py --equity 200000 --slots 15   # equal-weight sizing for new BUY signals
 ```
+
+### Position sizing is automatic
+
+New Tier-1 ENTER signals are added to `portfolio/lt_{market}.json` sized **equal-weight** —
+`shares = floor((equity ÷ slots) / price)`, the same formula the Long-Term Backtest engine uses —
+capped to however many of the configured `slots` (10 by default) are actually empty. You no longer
+need to manually fill in `shares`/`cost` after placing the real order. If you *didn't* place the
+order for a signal the screener added, edit or delete that entry from the portfolio JSON — it
+otherwise just sits there showing zero-cost P&L until you act on it.
 
 ### Reading the output
 
@@ -540,9 +550,19 @@ TIER 1 — BUY
 
 ### How to use Exit Watch
 
-The Exit Watch block is computed fresh each time you run the screener. Review it monthly:
-- If the technical condition triggers → exit regardless of fundamentals
-- If a fundamental threshold triggers → research whether it is temporary or structural before exiting
+The Exit Watch thresholds shown here are captured **at the moment a position is added** (not
+recomputed against a moving target) and stored on it. From then on, every time you hit **Refresh
+Prices** in the Portfolio tab's Long-Term view (either app), those stored thresholds are checked
+against *today's* price/SMA/fundamentals automatically — you don't need to re-run the screener or
+re-read this report to know if something has triggered:
+- **HOLD** — no threshold breached; shown as the normal "Safe" status.
+- **WATCH** — SMA_50 has crossed below SMA_200 but hasn't held for 15 trading days yet (~3 weeks);
+  or P/E has more than doubled since entry without a fundamental threshold actually breaking.
+- **SELL** ("Exit Signal") — breakdown confirmed (15+ days), or ROE/D-E/FCF/revenue-growth crossed
+  its stored threshold. Shown as a red alert banner and status badge.
+
+Positions added before this feature existed won't have stored thresholds — they still get the
+technical (SMA breakdown) check, just not the fundamental one, until you re-screen them.
 
 ---
 

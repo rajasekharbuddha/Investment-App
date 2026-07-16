@@ -23,8 +23,8 @@ pytest tests/
 
 # Run a single test file / class / test
 pytest tests/test_gates.py
-pytest tests/test_gates.py::TestGate4Liquidity
-pytest tests/test_gates.py::TestGate4Liquidity::test_mult_tightens
+pytest tests/test_gates.py::TestGate1Trend
+pytest tests/test_gates.py::TestGate1Trend::test_all_pass
 
 # Type-check (see mypy.ini gotcha below — do not run bare `mypy .`)
 mypy app.py src/*.py
@@ -85,7 +85,7 @@ SIP has its own separate config block, `SIP_CONFIG` in `src/sip_strategy.py`, in
 ### Three strategy modes share infrastructure, not logic
 
 - **Short-term (ATR-Dynamic)**: `decision_engine.py` + `backtest.py`, days-to-weeks holding period, 5-gate entry (`rules.py`), ATR-based sizing/trailing stop.
-- **Long-term (fundamental + momentum)**: `run_longterm.py`/`backtest_longterm.py` + `fundamental.py` (9-metric Q-score), quarterly rebalancing, independent from the short-term DecisionEngine.
+- **Long-term (fundamental + momentum)**: `run_longterm.py`/`backtest_longterm.py` + `fundamental.py` (9-metric Q-score), quarterly rebalancing, independent from the short-term DecisionEngine. `run_longterm.py`'s live position sizing (`_lt_update_portfolio`) deliberately mirrors `backtest_longterm.py`'s equal-weight formula exactly (`shares = floor((equity/slots) / (price×(1+slippage)×(1+commission)))`) — same lockstep-logic requirement as SIP below. Exit conditions for held positions are evaluated by `check_lt_exit()` against thresholds (`compute_exit_thresholds()`) captured *at entry time*, not recomputed against a moving target — don't evaluate a position's fundamentals against a freshly-recomputed threshold, or every position looks perpetually fine.
 - **SIP (regime-reserve)**: `sip_strategy.py` (live) / `backtest_sip.py` (historical) implement *identical* regime-reserve mechanics on purpose — a per-region cash reserve (`regime_reserve_pct`, default 10%) is held back monthly and released in full when that region's benchmark index closes below its SMA_200. Keep these two files' logic in lockstep; that's what makes backtest results comparable to live behavior. `src/compare_sip_*.py` are experimental A/B comparisons, not part of the production path.
 
 All three modes route through the same `data.py` (yfinance + parquet cache in `data/`) and `universe.py` (dynamic universe builder, cached under `universes/`, 7-day TTL) — these are two distinct cache layers, don't conflate them.

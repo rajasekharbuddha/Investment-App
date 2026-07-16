@@ -111,7 +111,7 @@ Both modes are accessible from either the desktop GUI or the browser UI. All `sr
 - **Synthetic shocks**: ATR doubled, volume × 0.30, overnight gap injection, correlation crisis
 
 ### Dynamic Universe
-- Builds universe from live index constituents (Nifty 250, S&P 500, DAX, FTSE 100, FTSE MIB)
+- Builds universe from live index constituents (Nifty 500 — falling back to Nifty 250, then Nifty 100, only if that fetch fails — S&P 500, DAX, FTSE 100, FTSE MIB)
 - Quality-scores all constituents and keeps top-N per market
 - Cached with 7-day TTL to avoid redundant downloads
 
@@ -127,12 +127,14 @@ Both modes are accessible from either the desktop GUI or the browser UI. All `sr
 
 ```
 InvestmentApp/
-├── app.py                    # Tkinter desktop GUI — 10 tabs
-├── app_web.py                # Streamlit browser app — 11 tabs (browser-only: Compounding Sim)
+├── app.py                    # Tkinter desktop GUI — 14 tabs
+├── app_web.py                # Streamlit browser app — 15 tabs
+├── CLAUDE.md                 # Guidance for Claude Code sessions working in this repo
 ├── .streamlit/
 │   └── config.toml           # Streamlit config (skips email prompt, sets port 8501)
 ├── src/
 │   ├── config.py             # All strategy parameters (single source of truth)
+│   ├── app_settings.py       # Shared GUI settings (app_settings.json) — both UIs read/write the same file
 │   ├── data.py               # yfinance fetch + parquet cache
 │   ├── indicators.py         # SMA, ATR, RSI, MACD, Bollinger, volume indicators
 │   ├── rules.py              # 5-gate entry evaluator
@@ -142,8 +144,9 @@ InvestmentApp/
 │   ├── backtest.py           # Short-term historical simulation
 │   ├── report.py             # Daily scan report formatter
 │   ├── fundamental.py        # Fundamental data fetch, cache, and scoring
-│   ├── run_longterm.py       # Long-term screener pipeline + CLI
-│   ├── backtest_longterm.py  # Long-term backtest engine
+│   ├── run_longterm.py       # Long-term screener pipeline + CLI — equal-weight sizing, Exit Watch (compute_exit_thresholds/check_lt_exit)
+│   ├── backtest_longterm.py  # Long-term backtest engine (same equal-weight sizing formula as run_longterm.py)
+│   ├── compounding_simulator.py  # Two-phase compounding simulator + shared REGION_CONFIG (used by both UIs)
 │   ├── universe.py           # Dynamic universe builder
 │   ├── stock_selector.py     # Quality composite score
 │   ├── select_stocks.py      # Stock selection helpers
@@ -173,8 +176,9 @@ InvestmentApp/
 │   └── test_backtest.py      # Backtest unit tests
 ├── data/                     # Parquet price cache (auto-populated)
 ├── universes/                # Index constituent CSV files
-│   ├── IN_nifty100.csv
-│   ├── IN_nifty250.csv
+│   ├── IN_nifty500.csv
+│   ├── IN_nifty250.csv       # fallback
+│   ├── IN_nifty100.csv       # fallback
 │   ├── US_sp500.csv
 │   ├── EU_dax.csv
 │   ├── EU_ftse100.csv
@@ -323,6 +327,7 @@ python src/run_backtest.py --market IN --start 2016-01-01
 ```bash
 python src/run_longterm.py
 python src/run_longterm.py --markets IN --no-near
+python src/run_longterm.py --equity 200000 --slots 15   # equal-weight sizing for new BUY signals
 ```
 
 ### CLI — long-term backtest
@@ -355,7 +360,7 @@ python src/run_backtest_sip.py --regime-reserve 0      # disable reserve (100% d
 
 ## Desktop App Tabs
 
-Launch with `python app.py`. Ten tabs across the top.
+Launch with `python app.py`. Fourteen tabs across the top — full feature parity with the browser app.
 
 ### Daily Scan
 Select markets (US / EU / IN / All), an as-of date (today or a past date for historical simulation), and optional quality filter. Runs the live signal scan. Output shows ENTER / NEAR / WAIT / SKIP decisions with ATR, gate details, stop levels, and position sizing. Portfolio is auto-saved and journal is updated after each run.
@@ -372,9 +377,18 @@ Configure market, date range, and equity. Runs the full ATR-Dynamic short-term s
 ### Long-Term
 Two sub-tools in one tab:
 
-**Screener** — fundamental + technical quality screener. Produces a tiered report (BUY / NEAR / WATCH) with Q-scores, red-flag alerts, and an Exit Watch block per stock.
+**Screener** — fundamental + technical quality screener. Produces a tiered report (BUY / NEAR / WATCH) with Q-scores, red-flag alerts, and an Exit Watch block per stock. Configure **Slots** alongside Markets/Min-Q/Top-N IN: new Tier-1 ENTER signals are automatically sized equal-weight (account equity ÷ slots) and added to the portfolio with real share counts, capped to however many slots are actually empty — no more manually filling in `shares`/`cost` after the fact. Each new position also stores the fundamental Exit Watch thresholds (ROE floor, D/E ceiling, revenue-growth/FCF sign, entry P/E) captured at that moment, so a later Portfolio refresh can evaluate them against *today's* numbers.
 
 **Backtest** — quarterly momentum rebalancing backtest with configurable slots, rebalance interval, breakdown exit toggle, and momentum floor.
+
+### Walk-Forward
+Rolling optimisation. Configure market, years of history, train/test window size (trading days), and anchored vs rolling mode.
+
+### Stress Tests
+Run historical (2008/2020/2022) and/or synthetic (vol spike, liquidity collapse, gap risk, correlation crisis) scenarios.
+
+### Monte Carlo
+Bootstraps a trades CSV from a previous Backtest run. Configure simulations, trade-skip probability, and equity. Shows a percentile equity-path chart (p5 / p25 / median / p75 / p95) alongside the text summary.
 
 ### SIP Plan
 Monthly Systematic Investment Plan — deploys a fixed per-region budget into quality/momentum picks, holding back a 10% regime reserve that releases in full when a region's benchmark index drops below its 200-day SMA. Two sub-tools:
@@ -382,6 +396,9 @@ Monthly Systematic Investment Plan — deploys a fixed per-region budget into qu
 **Monthly Cycle** — run this month's SIP deployment (or a dry-run preview), showing candidates, allocation, exit signals, and a regime-reserve status readout per region.
 
 **SIP Backtest** — historical simulation of the same regime-reserve logic, with a configurable `regime_reserve_pct`. See [SIP: Regime-Reserve Dip-Buying Strategy](#sip-regime-reserve-dip-buying-strategy) for the mechanics.
+
+### Compounding Sim
+A standalone, pure compound-interest simulator — independent of the stock-picking engines in every other tab. Models a two-phase wealth strategy: **Phase 1 "Matching Velocity"** (contribute a fixed monthly amount matching the lump sum's initial organic growth) followed by **Phase 2 "Pure Compounding"** (contributions drop to zero). Configurable region (IN/US/EU), initial capital, target ROI, and phase durations. Outputs an Executive Summary, a milestone tracker, a Rule of 72 validation, a phase-colour-coded trajectory chart (embedded matplotlib) with milestone lines, and a full Yearly/Monthly ledger (CSV export). **Stress Test mode** runs a Monte Carlo simulation to show the success rate of reaching the goal and the effect of volatility drag on the median outcome, with a percentile-outcome histogram. Backed by `src/compounding_simulator.py`, shared with the browser app via `REGION_CONFIG`/`format_amount`/`format_amount_abbrev`.
 
 ### Portfolio
 Live portfolio monitor — split into **4 regional sub-tabs** so P&L totals are always in a single currency:
@@ -397,7 +414,7 @@ A global alerts strip above the tabs shows stop hits and near-stop warnings acro
 
 | Column | Description |
 |--------|-------------|
-| Status | STOP HIT / NEAR STOP / Safe |
+| Status | STOP HIT / NEAR STOP / Safe (short-term); for long-term positions, also EXIT SIGNAL / WATCH from the live Exit Watch check (see Long-Term above) |
 | Live Px | Current price from Yahoo Finance |
 | Stop | Current trailing stop level |
 | Dist% | Distance to stop as a percentage |
@@ -405,7 +422,7 @@ A global alerts strip above the tabs shows stop hits and near-stop warnings acro
 | R× | R-multiples earned based on initial risk |
 | Days | Calendar days since entry |
 
-Click **Refresh Prices** to fetch live prices. Rows colour red for stop hit, yellow for near stop, green for safe. Details area below each table shows full per-position breakdown. Long-term positions added by the LT Screener are marked `[LT]` and show their fundamental score and grade.
+Click **Refresh Prices** to fetch live prices. Rows colour red for stop hit, yellow for near stop, green for safe. Details area below each table shows full per-position breakdown. Long-term positions added by the LT Screener are marked `[LT]` and show their fundamental score, grade, and an **Exit Watch** line with the specific technical/fundamental reasons behind the current verdict (e.g. "SMA_50 < SMA_200 for 12 day(s) — watching for confirmation", or "ROE 6.2% below exit threshold 10%").
 
 ### Reports
 Lists all saved `.txt` report files in `reports/`. Click any file to view it.
@@ -420,12 +437,18 @@ Adjust account size, position limits, risk parameters, momentum periods, and uni
 
 ## Browser App Tabs
 
-Launch with `streamlit run app_web.py` → open **http://localhost:8501**.
+Launch with `streamlit run app_web.py` → open **http://localhost:8501**. Fifteen tabs — full feature parity with the desktop app.
 
 Sidebar controls (equity, commission, slippage, strategy flags) apply to every tab.
 
 ### Daily Scan
 Same pipeline as the desktop app. Real-time step-by-step progress. Summary metrics bar shows ENTER / NEAR counts and tuner mode. Portfolio is auto-saved after the run.
+
+### Universe
+Scores every ticker in the configured universe by momentum velocity, SMA_50 trend distance, and composite grade.
+
+### Post-Trade
+Enriches today's journal rows (WAIT / ENTER / NEAR) with position sizing details, market-behaviour context, and Tier 3 reflection notes.
 
 ### ST Backtest
 ATR-Dynamic short-term backtest. Renders an interactive equity curve chart. Includes a **Download Trades CSV** button.
@@ -434,7 +457,7 @@ ATR-Dynamic short-term backtest. Renders an interactive equity curve chart. Incl
 Long-term quarterly rebalancing backtest. Interactive equity curve chart. Configurable rebalance interval (monthly / quarterly / semi-annual / annual), momentum floor, and SMA breakdown exit toggle.
 
 ### LT Screener
-Fundamental screener. Full tiered output (BUY / NEAR / WATCH) with Exit Watch blocks per stock.
+Fundamental screener. Full tiered output (BUY / NEAR / WATCH) with Exit Watch blocks per stock. Configure **Equity** and **Slots** alongside Markets/Min-Q/Universe size: new Tier-1 ENTER signals are automatically sized equal-weight and added to the portfolio with real share counts (capped to available empty slots), and each stores the fundamental Exit Watch thresholds captured at that moment for later live evaluation.
 
 ### Walk-Forward
 Rolling optimisation. Configure train/test window size and anchored vs rolling mode.
@@ -449,13 +472,19 @@ Bootstraps a trades CSV from a previous backtest. Shows percentile equity path c
 Monthly Systematic Investment Plan — two sub-tabs, **📅 Monthly Cycle** and **📊 SIP Backtest**. Configure per-region monthly budget, min Q-score, and universe size; run a dry-run preview or a live cycle. Displays candidates, allocation, exit signals, and a **Regime Reserve** status box showing each region's uptrend/downtrend state and current held-back cash. The backtest sub-tab simulates the same regime-reserve logic over history with a configurable reserve percentage. See [SIP: Regime-Reserve Dip-Buying Strategy](#sip-regime-reserve-dip-buying-strategy) below.
 
 ### Compounding Sim
-*(Browser app only.)* A standalone, pure compound-interest simulator — independent of the stock-picking engines in every other tab. Models a two-phase wealth strategy: **Phase 1 "Matching Velocity"** (contribute a fixed monthly amount matching the lump sum's initial organic growth) followed by **Phase 2 "Pure Compounding"** (contributions drop to zero). Configurable initial capital, target ROI, and phase durations. Outputs an Executive Summary table, a milestone tracker (₹1/3/6/10 Cr crossing years), a [Rule of 72](https://en.wikipedia.org/wiki/Rule_of_72) validation, a phase-colour-coded trajectory chart with milestone lines, and a full monthly/yearly ledger (CSV download). **Stress Test mode** runs a Monte Carlo simulation (random annual returns drawn from a Normal distribution around the target ROI) to show the success rate of reaching the goal and the effect of [volatility drag](https://en.wikipedia.org/wiki/Volatility_tax) on the median outcome. Backed by `src/compounding_simulator.py`.
+A standalone, pure compound-interest simulator — independent of the stock-picking engines in every other tab. Models a two-phase wealth strategy: **Phase 1 "Matching Velocity"** (contribute a fixed monthly amount matching the lump sum's initial organic growth) followed by **Phase 2 "Pure Compounding"** (contributions drop to zero). Configurable region (IN/US/EU), initial capital, target ROI, and phase durations. Outputs an Executive Summary table, a milestone tracker, a [Rule of 72](https://en.wikipedia.org/wiki/Rule_of_72) validation, a phase-colour-coded trajectory chart with milestone lines, and a full monthly/yearly ledger (CSV download). **Stress Test mode** runs a Monte Carlo simulation (random annual returns drawn from a Normal distribution around the target ROI) to show the success rate of reaching the goal and the effect of [volatility drag](https://en.wikipedia.org/wiki/Volatility_tax) on the median outcome. Backed by `src/compounding_simulator.py`.
 
 ### Portfolio
-Live portfolio monitor with **4 regional sub-tabs** (Overview / US / EU / IN) — each regional tab shows single-currency totals so P&L figures are always meaningful. Alerts for stop hits and near-stop positions appear above the tabs. Progress-bar Stop Dist % column and per-position expanders. Long-term Screener entries are marked with an `[LT]` badge showing their fundamental grade and exit condition (SMA_200 cross). Prices cached per session; click **Refresh Prices** to update.
+Live portfolio monitor with **4 regional sub-tabs** (Overview / US / EU / IN) — each regional tab shows single-currency totals so P&L figures are always meaningful. Alerts for stop hits, near-stop, and Exit Watch signals appear above the tabs. Progress-bar Stop Dist % column and per-position expanders. Long-term Screener entries are marked with an `[LT]` badge showing their fundamental grade and a live **Exit Watch** verdict (HOLD / WATCH / SELL) with the specific reasons, evaluated against the thresholds captured when the position was added. Prices cached per session; click **Refresh Prices** to update (also re-checks Exit Watch for long-term positions).
 
 ### Reports
 Browse and download all `.txt` reports saved by the scan and backtest runs.
+
+### Bench List
+Builds a ranked replacement candidate list — stocks that are almost ready to enter and could replace an exiting position. Configure market, Top N, and quality sort.
+
+### Settings
+Adjust account size, position limits, risk parameters, momentum periods, and universe size without editing code. Persisted to `app_settings.json` — shared with the desktop app via `src/app_settings.py`, so changes made in either UI apply to both.
 
 ---
 
@@ -468,7 +497,7 @@ All CLI runners live in `src/` and support `--help` for full argument lists.
 | `run_daily.py` | Daily signal scan | `--markets`, `--dynamic`, `--quality-filter`, `--top-n`, `--skip-journal`, `--asof` |
 | `run_backtest.py` | Short-term backtest | `--market`, `--start`, `--end`, `--equity`, `--no-dynamic` |
 | `run_backtest_longterm.py` | Long-term backtest | `--market`, `--start`, `--end`, `--slots`, `--rebalance`, `--no-breakdown`, `--momentum-floor` |
-| `run_longterm.py` | Long-term screener | `--markets`, `--no-near`, `--min-q`, `--top-n-in` |
+| `run_longterm.py` | Long-term screener | `--markets`, `--no-near`, `--min-q`, `--top-n-in`, `--equity`, `--slots` |
 | `run_sip.py` | SIP monthly cycle | `--markets`, `--min-q`, `--top-n`, `--dry-run`, `--refresh-cache` |
 | `run_backtest_sip.py` | SIP backtest | `--markets`, `--start`, `--end`, `--max-picks`, `--top-n`, `--regime-reserve` |
 | `run_walkforward.py` | Walk-forward optimisation | `--market`, `--years`, `--train`, `--test`, `--anchored` |
@@ -586,6 +615,8 @@ All runs use 100k initial equity, 0.10% slippage, 0.10% commission, dynamic univ
 - P/E exceeds current_pe × 2 without growth acceleration
 
 *Momentum floor (backtest proxy):* Exit at rebalance if avg momentum score < –5% (default). Set to –99 to disable.
+
+**Position sizing:** new Tier-1 ENTER signals are sized equal-weight — `shares = floor((equity ÷ slots) / (price × (1 + slippage) × (1 + commission)))` — the same formula the Long-Term Backtest engine uses, capped to however many of the configured `slots` are actually empty. The Exit Watch thresholds above are computed and stored on the position *at entry* (not recomputed against a moving target), so a later Portfolio refresh evaluates today's fundamentals against the values captured when the position was added. The technical breakdown check requires SMA_50 < SMA_200 for 15 consecutive trading days (≈3 weeks) before returning a SELL verdict — until then it shows WATCH. See `check_lt_exit()` / `compute_exit_thresholds()` in `src/run_longterm.py`.
 
 **Long-term backtest results (IN market, 2015–2026):** ~28% CAGR, significant alpha over Nifty.
 
@@ -713,7 +744,7 @@ Price data is cached as Parquet files in `data/` after the first download. Subse
 | United States | `US` | USD ($) | S&P 500 (^GSPC) | Scalable Capital Prime+ |
 | Europe | `EU` | EUR | STOXX 50 (^STOXX50E) | Scalable Capital Prime+ |
 
-Universe CSVs cover Nifty 100, Nifty 250, S&P 500, DAX, FTSE 100, and FTSE MIB. Ticker symbols follow Yahoo Finance conventions (`.NS` for NSE, `.DE` / `.PA` / `.L` etc. for European exchanges).
+Universe CSVs cover Nifty 500 (falling back to Nifty 250, then Nifty 100), S&P 500, DAX, FTSE 100, and FTSE MIB. Ticker symbols follow Yahoo Finance conventions (`.NS` for NSE, `.DE` / `.PA` / `.L` etc. for European exchanges).
 
 ---
 

@@ -25,6 +25,7 @@ Usage
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import sys
 from pathlib import Path
@@ -40,6 +41,10 @@ TIER2 = 60   # Watch & accumulate on dips
 TIER3 = 45   # Watchlist -- monitor for improvement
 
 MIN_Q_DEFAULT = 55   # technical quality gate
+
+LT_MAX_POSITIONS_DEFAULT = 10        # equal-weight slots (matches backtest_longterm.py)
+LT_EQUITY_DEFAULT        = 100_000.0
+LT_BREAKDOWN_CONFIRM_DAYS = 15       # ~3 trading weeks, per README ("confirmed 2-3 weeks")
 
 ROOT       = Path(__file__).parent.parent
 TUNER_FILE = ROOT / "tuner_state.json"
@@ -67,6 +72,112 @@ def _bar(score: float, width: int = 10) -> str:
 
 def _c(text: str, code: str) -> str:
     return f"\033[{code}m{text}\033[0m"
+
+
+# -- Exit Watch: thresholds + live evaluation ----------------------------------
+
+def compute_exit_thresholds(fund_data: dict) -> dict:
+    """
+    Derive the fundamental Exit Watch thresholds from a stock's fundamentals
+    *at the time it is screened/entered*. These are stored on the position so
+    a later Portfolio refresh can compare today's fundamentals against the
+    values captured at entry, rather than against a moving target.
+    """
+    th: dict = {}
+
+    roe = fund_data.get("roe")
+    if roe is not None:
+        th["roe_min"] = max(0.10, round(roe * 0.5, 4))
+
+    rg = fund_data.get("revenue_cagr_3yr") or fund_data.get("revenue_growth")
+    if rg is not None:
+        th["revenue_growth_was_positive"] = rg > 0
+
+    de = fund_data.get("debt_equity")
+    if de is not None:
+        th["de_max"] = max(2.0, round(de * 2, 2))
+
+    fcf = fund_data.get("fcf_yield")
+    if fcf is not None:
+        th["fcf_was_positive"] = fcf > 0
+
+    pe = fund_data.get("pe")
+    if pe is not None and pe > 0:
+        th["pe_at_entry"] = round(pe, 2)
+
+    return th
+
+
+def _consecutive_days_breakdown(sma50_series, sma200_series) -> int:
+    """Count trailing consecutive days where SMA_50 < SMA_200 (0 if not currently broken down)."""
+    breakdown = (sma50_series < sma200_series).tolist()
+    count = 0
+    for v in reversed(breakdown):
+        if v:
+            count += 1
+        else:
+            break
+    return count
+
+
+def check_lt_exit(
+    position: dict,
+    price: "float | None" = None,
+    sma50: "float | None" = None,
+    sma200: "float | None" = None,
+    days_below_sma200: int = 0,
+    fund_data: "dict | None" = None,
+) -> dict:
+    """
+    Evaluate exit conditions for a held long-term position against current
+    price/SMA/fundamentals, using the thresholds captured at entry
+    (position["exit_thresholds"]).
+
+    Returns {"verdict": "SELL" | "WATCH" | "HOLD", "reasons": [str, ...]}.
+    """
+    reasons: list[str] = []
+    verdict = "HOLD"
+
+    if sma50 is not None and sma200 is not None and sma50 < sma200:
+        if days_below_sma200 >= LT_BREAKDOWN_CONFIRM_DAYS:
+            verdict = "SELL"
+            reasons.append(f"SMA_50 < SMA_200 for {days_below_sma200} days (breakdown confirmed)")
+        else:
+            verdict = "WATCH"
+            reasons.append(f"SMA_50 < SMA_200 for {days_below_sma200} day(s) -- watching for confirmation")
+
+    th = position.get("exit_thresholds") or {}
+    if fund_data:
+        roe = fund_data.get("roe")
+        if roe is not None and th.get("roe_min") is not None and roe < th["roe_min"]:
+            verdict = "SELL"
+            reasons.append(f"ROE {roe*100:.1f}% below exit threshold {th['roe_min']*100:.0f}%")
+
+        rg = fund_data.get("revenue_cagr_3yr") or fund_data.get("revenue_growth")
+        if rg is not None and th.get("revenue_growth_was_positive") and rg <= 0:
+            verdict = "SELL"
+            reasons.append(f"Revenue growth turned negative ({rg*100:.1f}%)")
+
+        de = fund_data.get("debt_equity")
+        if de is not None and th.get("de_max") is not None and de > th["de_max"]:
+            verdict = "SELL"
+            reasons.append(f"D/E {de:.2f}x above exit threshold {th['de_max']:.1f}x")
+
+        fcf = fund_data.get("fcf_yield")
+        if fcf is not None and th.get("fcf_was_positive") and fcf < 0:
+            verdict = "SELL"
+            reasons.append(f"FCF yield turned negative ({fcf*100:.1f}%)")
+
+        pe = fund_data.get("pe")
+        if pe is not None and th.get("pe_at_entry") and pe > th["pe_at_entry"] * 2:
+            if verdict == "HOLD":
+                verdict = "WATCH"
+            reasons.append(f"P/E {pe:.1f}x above 2x entry P/E ({th['pe_at_entry']:.1f}x) -- check growth")
+
+    if not reasons:
+        reasons.append("No exit triggers -- fundamentals and trend intact")
+
+    return {"verdict": verdict, "reasons": reasons}
 
 
 # -- Post-screen helpers -------------------------------------------------------
@@ -110,8 +221,22 @@ def _lt_update_journal(candidates: list[dict], markets_obj: dict) -> None:
         print(f"  Journal  : \033[91mError — {exc}\033[0m")
 
 
-def _lt_update_portfolio(candidates: list[dict], today) -> None:
-    """Add Tier-1 ENTER signals to lt_{market}.json (strategy=longterm, per-market)."""
+def _lt_update_portfolio(
+    candidates: list[dict],
+    today,
+    equity: float = LT_EQUITY_DEFAULT,
+    max_positions: int = LT_MAX_POSITIONS_DEFAULT,
+    commission: float = 0.001,
+    slippage: float = 0.001,
+) -> None:
+    """
+    Add Tier-1 ENTER signals to lt_{market}.json (strategy=longterm, per-market),
+    sized equal-weight across `max_positions` slots -- the same formula
+    backtest_longterm.py uses (alloc_each = equity / max_positions), so a live
+    suggestion matches what the historical simulation assumes. Only as many new
+    candidates as there are empty slots get sized and added; the rest are left
+    for a future run once a slot frees up.
+    """
     import json
 
     port_root = ROOT / "portfolio"
@@ -119,8 +244,10 @@ def _lt_update_portfolio(candidates: list[dict], today) -> None:
 
     today_str  = today.strftime("%Y-%m-%d")
     added_all: list[str] = []
+    alloc_each = equity / max_positions
 
-    # Group candidates by market
+    # Group candidates by market (order is preserved, so already best-first
+    # since `candidates` was sorted by combined score before this call)
     by_market: dict[str, list] = {}
     for s in candidates:
         mkt = s.get("market", "IN")
@@ -136,18 +263,33 @@ def _lt_update_portfolio(candidates: list[dict], today) -> None:
                 pass
 
         existing_tickers = {p["ticker"] for p in existing}
+        n_empty = max(0, max_positions - len(existing))
         added: list[str] = []
+        skipped_no_slot: list[str] = []
 
         for s in mkt_cands:
             ticker = s["ticker"]
             if ticker in existing_tickers:
                 print(f"  Portfolio: {ticker} already tracked — skipped")
                 continue
+            if len(added) >= n_empty:
+                skipped_no_slot.append(ticker)
+                continue
 
             price  = float(s.get("price") or 0)
+            if price <= 0:
+                continue
             sma200 = s.get("sma200") or price * 0.85
             atr    = s.get("atr") or (price * (s.get("atr_pct") or 2) / 100)
             stop   = round(max(float(sma200), price - 8 * atr), 2)
+
+            fill   = price * (1 + slippage)
+            shares = math.floor(alloc_each / (fill * (1 + commission)))
+            cost   = round(shares * fill * (1 + commission), 2)
+            if shares <= 0:
+                print(f"  Portfolio: {ticker} price {price:.2f} too high for "
+                      f"per-slot allocation {alloc_each:,.0f} — skipped (0 shares)")
+                continue
 
             existing.append({
                 "ticker":            ticker,
@@ -155,7 +297,7 @@ def _lt_update_portfolio(candidates: list[dict], today) -> None:
                 "sector":            s["fund_data"].get("sector", "Unknown"),
                 "entry_price":       round(price, 2),
                 "entry_date":        today_str,
-                "shares":            0,
+                "shares":            shares,
                 "stop_loss":         stop,
                 "stop_loss_initial": stop,
                 "trail_mult":        8.0,
@@ -164,20 +306,24 @@ def _lt_update_portfolio(candidates: list[dict], today) -> None:
                 "risk_pct":          0.0,
                 "regime":            "Normal",
                 "is_high_vol":       False,
-                "cost":              0.0,
+                "cost":              cost,
                 "strategy":          "longterm",
                 "lt_combined":       round(s["combined"], 1),
                 "lt_fund_score":     round(s["fund_score"], 1),
                 "lt_grade":          s["grade"],
+                "exit_thresholds":   compute_exit_thresholds(s["fund_data"]),
             })
             added.append(ticker)
 
         if added:
             port_path.write_text(json.dumps(existing, indent=2))
-            print(f"  Portfolio [{mkt}]: added {len(added)} LT position(s): {', '.join(added)}")
-            print(f"  \033[90m  -> Fill 'shares' and 'cost' in portfolio/lt_{mkt}.json "
-                  f"after you execute the order\033[0m")
-            added_all.extend(added)
+            print(f"  Portfolio [{mkt}]: added {len(added)} LT position(s), "
+                  f"sized equal-weight at {alloc_each:,.0f}/slot ({max_positions} slots): "
+                  + ", ".join(added))
+        if skipped_no_slot:
+            print(f"  \033[90m  -> {len(skipped_no_slot)} more Tier-1 candidate(s) skipped "
+                  f"(no empty slots): {', '.join(skipped_no_slot)}\033[0m")
+        added_all.extend(added)
 
     if not added_all:
         print(f"  Portfolio: no new positions to add\n")
@@ -191,6 +337,8 @@ def run_longterm_screen(
     include_near: bool = True,
     refresh_cache: bool= False,
     top_n_in: int      = 250,
+    equity: float       = LT_EQUITY_DEFAULT,
+    max_positions: int  = LT_MAX_POSITIONS_DEFAULT,
 ) -> None:
     import pandas as pd
 
@@ -508,7 +656,7 @@ def run_longterm_screen(
     if lt_enters:
         print(f"\033[1m\033[94m  Post-screen actions ({len(lt_enters)} Tier-1 ENTER signal(s))...\033[0m")
         _lt_update_journal(lt_enters, MARKETS)
-        _lt_update_portfolio(lt_enters, today)
+        _lt_update_portfolio(lt_enters, today, equity=equity, max_positions=max_positions)
     else:
         print(f"\033[90m  No Tier-1 ENTER signals — journal and portfolio not updated.\033[0m\n")
 
@@ -531,6 +679,10 @@ def main() -> None:
                         help="Force re-fetch fundamental data (ignore 7-day cache)")
     parser.add_argument("--top-n-in",      type=int, default=250,
                         help="Dynamic universe size for IN market (default: 250)")
+    parser.add_argument("--equity",        type=float, default=LT_EQUITY_DEFAULT,
+                        help=f"Account equity for equal-weight sizing (default: {LT_EQUITY_DEFAULT:,.0f})")
+    parser.add_argument("--slots",         type=int, default=LT_MAX_POSITIONS_DEFAULT,
+                        help=f"Equal-weight portfolio slots (default: {LT_MAX_POSITIONS_DEFAULT})")
     args = parser.parse_args()
 
     run_longterm_screen(
@@ -539,6 +691,8 @@ def main() -> None:
         include_near  = not args.no_near,
         refresh_cache = args.refresh_cache,
         top_n_in      = args.top_n_in,
+        equity        = args.equity,
+        max_positions = args.slots,
     )
 
 

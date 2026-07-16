@@ -650,6 +650,12 @@ with T_LTS:
         lts_refresh = st.checkbox("Refresh fundamental cache (force re-fetch)", value=False)
         lts_top_n   = st.number_input("Universe size (IN)", value=250, step=50, key="lts_topn")
 
+    lts_c1, lts_c2 = st.columns(2)
+    with lts_c1:
+        lts_equity = st.number_input("Equity (for equal-weight sizing)", value=equity_s, key="lts_equity")
+    with lts_c2:
+        lts_slots  = st.number_input("Slots (equal-weight portfolio)", value=10, min_value=1, max_value=30, key="lts_slots")
+
     if st.button("▶ Run Screener", type="primary", key="btn_lts"):
         if not lts_markets:
             st.warning("Select at least one market.")
@@ -667,6 +673,8 @@ with T_LTS:
                         include_near=not lts_no_near,
                         refresh_cache=lts_refresh,
                         top_n_in=int(lts_top_n),
+                        equity=float(lts_equity),
+                        max_positions=int(lts_slots),
                     )
                 status.update(label="Screen complete!", state="complete")
 
@@ -1761,6 +1769,43 @@ with T_PORT:
 
             price_map: dict = st.session_state.get(_prices_key, {})
 
+            # Exit Watch (technical breakdown-confirmation + fundamental thresholds
+            # captured at entry) for held long-term positions only.
+            _exitwatch_key = f"port_exitwatch_{_strat_key}"
+            if _strat_key == "lt" and (do_refresh or _exitwatch_key not in st.session_state):
+                with st.spinner("Checking Exit Watch signals…"):
+                    from data import fetch_history
+                    from indicators import calculate_all
+                    from fundamental import fetch_fundamentals
+                    from run_longterm import check_lt_exit, _consecutive_days_breakdown
+
+                    exit_watch: dict = {}
+                    for p in positions:
+                        t = p["ticker"]
+                        sma50 = sma200 = None
+                        days_bd = 0
+                        try:
+                            df = fetch_history(t, years=2)
+                            if df is not None and len(df) >= 200:
+                                ind    = calculate_all(df)
+                                sma50  = float(ind["SMA_50"].iloc[-1])
+                                sma200 = float(ind["SMA_200"].iloc[-1])
+                                days_bd = _consecutive_days_breakdown(ind["SMA_50"], ind["SMA_200"])
+                        except Exception:
+                            pass
+                        fund = None
+                        try:
+                            fund = fetch_fundamentals(t, use_cache=True)
+                        except Exception:
+                            pass
+                        exit_watch[t] = check_lt_exit(
+                            p, price=price_map.get(t), sma50=sma50, sma200=sma200,
+                            days_below_sma200=days_bd, fund_data=fund,
+                        )
+                    st.session_state[_exitwatch_key] = exit_watch
+
+            exit_watch_map: dict = st.session_state.get(_exitwatch_key, {})
+
             # ── Build rows ───────────────────────────────────────────────────
             today_p = pd.Timestamp.today().normalize()
             rows    = []
@@ -1798,6 +1843,13 @@ with T_PORT:
                     cur_val = pnl = pnl_pct = r_mult = stop_dist = None
                     pstatus = "⚪ No price"
 
+                exit_watch = exit_watch_map.get(ticker) if _strat_key == "lt" else None
+                if exit_watch and "STOP HIT" not in pstatus:
+                    if exit_watch["verdict"] == "SELL":
+                        pstatus = "🔴 Exit Signal"
+                    elif exit_watch["verdict"] == "WATCH" and "Safe" in pstatus:
+                        pstatus = "🟡 Watch"
+
                 rows.append({
                     "status": pstatus, "ticker": ticker, "market": market,
                     "curr": curr, "sector": p.get("sector", "Unknown"),
@@ -1808,11 +1860,14 @@ with T_PORT:
                     "r_mult": r_mult, "regime": regime, "peak_px": peak_px,
                     "atr": atr, "trail_mult": trail_mult,
                     "lt_combined": p.get("lt_combined"), "lt_grade": p.get("lt_grade"),
+                    "exit_watch": exit_watch,
                 })
 
             # ── Global alerts ────────────────────────────────────────────────
-            stop_hits = [r for r in rows if "STOP HIT" in r["status"]]
-            near_stps = [r for r in rows if "Near stop" in r["status"]]
+            stop_hits  = [r for r in rows if "STOP HIT" in r["status"]]
+            near_stps  = [r for r in rows if "Near stop" in r["status"]]
+            exit_sigs  = [r for r in rows if "Exit Signal" in r["status"]]
+            watch_sigs = [r for r in rows if r["status"] == "🟡 Watch"]
             if stop_hits:
                 st.error("🔴 **Stop breached — review immediately:** "
                          + ", ".join(r["ticker"] for r in stop_hits))
@@ -1820,6 +1875,12 @@ with T_PORT:
                 st.warning("🟡 **Within 5% of stop:** "
                            + ", ".join(f"{r['ticker']} ({r['stop_dist']:.1f}%)"
                                        for r in near_stps))
+            if exit_sigs:
+                st.error("🔴 **Exit Watch triggered — review:** "
+                         + ", ".join(r["ticker"] for r in exit_sigs))
+            if watch_sigs:
+                st.warning("🟡 **Exit Watch — early warning:** "
+                           + ", ".join(r["ticker"] for r in watch_sigs))
 
             # ── Per-region sub-tabs ───────────────────────────────────────────
             def _render_region(tab_rows, market):
@@ -1904,7 +1965,11 @@ with T_PORT:
                             + (f"  ·  Value: {r['curr']}{r['cur_val']:,.0f}" if r["cur_val"] else "")
                         )
                         if _strat_key == "lt" and r.get("lt_combined"):
-                            st.caption(f"LT score: {r['lt_combined']}  ·  Grade: {r['lt_grade']}  ·  Exit: SMA_200 cross")
+                            st.caption(f"LT score: {r['lt_combined']}  ·  Grade: {r['lt_grade']}")
+                        if _strat_key == "lt":
+                            ew = r.get("exit_watch")
+                            reasons = "; ".join(ew["reasons"]) if ew else "not yet checked"
+                            st.caption(f"**Exit Watch:** {reasons}")
 
             # ── Overview row: 3 regions side-by-side ─────────────────────────
             tab_ov, tab_us, tab_eu, tab_in = st.tabs(["🌍 Overview", "🇺🇸 US", "🇪🇺 EU", "🇮🇳 IN"])
