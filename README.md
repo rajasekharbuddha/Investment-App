@@ -21,6 +21,7 @@ Systematic stock research, signal generation, and strategy backtesting across US
 11. [File Structure](#file-structure)
 12. [Markets Supported](#markets-supported)
 13. [Glossary & Further Reading](#glossary--further-reading)
+14. [Running Tests](#running-tests)
 
 ---
 
@@ -811,3 +812,31 @@ pytest tests/
 ```
 
 Tests cover gate evaluation logic (`test_gates.py`) and core backtest accounting (`test_backtest.py`).
+
+### Latest test results
+
+Run on 2026-10-04 (commit `191d919`, Python 3.11.15, pytest 9.1.1): **42 passed, 3 failed** (45 tests, ~8 s).
+
+| File | Test class | Tests | Result |
+|---|---|---|---|
+| `test_gates.py` | `TestGate1Trend` | 5 | ✅ pass |
+| `test_gates.py` | `TestGate2Momentum` | 5 | ✅ pass |
+| `test_gates.py` | `TestGate3Volatility` | 3 | ✅ pass |
+| `test_gates.py` | `TestGate4Liquidity` | 4 | ⚠️ 3 pass, 1 fail |
+| `test_gates.py` | `TestGate5Execution` | 4 | ✅ pass |
+| `test_gates.py` | `TestAntiChase` | 3 | ✅ pass |
+| `test_gates.py` | `TestEvaluateGatesIntegration` | 7 | ✅ pass |
+| `test_backtest.py` | `TestRoundTripAccounting` | 3 | ✅ pass |
+| `test_backtest.py` | `TestEquityNeverNegative` | 2 | ✅ pass |
+| `test_backtest.py` | `TestNoDuplicateHoldings` | 1 | ✅ pass |
+| `test_backtest.py` | `TestPositionSizeCap` | 3 | ⚠️ 1 pass, 2 fail |
+| `test_backtest.py` | `TestDateHandling` | 3 | ✅ pass |
+| `test_backtest.py` | `TestDynamicUniverse` | 2 | ✅ pass |
+
+The 3 failures are known and older than recent changes. The tests still assert earlier parameter values that were later replaced by the locked RUN17 settings (see [`RUN17_STRATEGY.md`](RUN17_STRATEGY.md)):
+
+| Failing test | Why it fails |
+|---|---|
+| `test_backtest.py::TestPositionSizeCap::test_no_single_trade_costs_more_than_20pct` | Asserts a 20% per-position cap, but `RISK["MAX_POSITION_SIZE_PCT"]` is now 0.24 (24% baseline, 8 slots). |
+| `test_backtest.py::TestPositionSizeCap::test_size_capped_decision_engine` | Same 20% assumption: `DecisionEngine._size()` returns a cost of 23,923.9 on 100,000 equity, which is inside the 24% cap. |
+| `test_gates.py::TestGate4Liquidity::test_mult_tightens` | Expects a 1.0× volume ratio to fail with `volume_mult=1.2`, but the market baseline (`volume_mult_us`) is now 0.55, so the required ratio is 0.66 and the row passes. |
