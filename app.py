@@ -358,6 +358,12 @@ class App(tk.Tk):
         tk.Checkbutton(bar, text="Refresh cache", variable=self._lt_refresh,
                        bg=self.BG, fg=self.MUTED, selectcolor=self.SURFACE,
                        activebackground=self.BG, activeforeground=self.ACCENT,
+                       font=(_MONO, 9)).pack(side="left", padx=(0, 8))
+
+        self._lt_graham = tk.BooleanVar(value=False)
+        tk.Checkbutton(bar, text="Graham filter", variable=self._lt_graham,
+                       bg=self.BG, fg=self.MUTED, selectcolor=self.SURFACE,
+                       activebackground=self.BG, activeforeground=self.ACCENT,
                        font=(_MONO, 9)).pack(side="left", padx=(0, 16))
 
         self._lt_btn = self._button(bar, "▶  Run Long-Term Screen", self._run_longterm)
@@ -367,7 +373,7 @@ class App(tk.Tk):
 
         tk.Label(parent,
                  text="  Technical gates + Q-score pre-screen  ->  Fundamental scoring"
-                      " (ROE, growth, D/E, FCF)  ->  Tiered report + Exit Watch per stock",
+                      " (ROE, growth, D/E, FCF)  ->  Graham tests  ->  Tiered report + Exit Watch",
                  bg=self.BG, fg=self.MUTED, font=(_MONO, 9), anchor="w"
                  ).pack(fill="x", padx=14, pady=(0, 2))
 
@@ -2569,13 +2575,15 @@ class App(tk.Tk):
                 top_n,
                 equity,
                 slots,
+                self._lt_graham.get(),
             ),
             daemon=True,
         ).start()
 
     def _worker_longterm(self, markets: str, min_q: int, include_near: bool,
                          refresh_cache: bool, top_n_in: int,
-                         equity: float = 100_000.0, max_positions: int = 10):
+                         equity: float = 100_000.0, max_positions: int = 10,
+                         graham_filter: bool = False):
         import contextlib, io, re as _re
         w = _QWriter(self._q)
         self._apply_settings_to_config()
@@ -2592,6 +2600,7 @@ class App(tk.Tk):
                     top_n_in      = top_n_in,
                     equity        = equity,
                     max_positions = max_positions,
+                    graham_filter = graham_filter,
                 )
             # Save plain-text copy to reports/
             plain = _re.sub(r"\x1b\[[0-9;]*m", "", buf.getvalue())
