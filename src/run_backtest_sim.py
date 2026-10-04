@@ -37,9 +37,10 @@ def main() -> None:
     parser.add_argument("--start",    default="2008", help="Start year (default: 2008)")
     parser.add_argument("--end",      default="2026-10-04")
     parser.add_argument("--equity",   type=float, default=100_000)
-    parser.add_argument("--slots",    type=int,   default=10)   # V4: 10 positions
-    parser.add_argument("--review",   type=int,   default=42)   # V4: 42-day review
-    parser.add_argument("--min-rank", type=float, default=0.20) # V4: top-80% threshold
+    parser.add_argument("--slots",    type=int,   default=8)
+    parser.add_argument("--review",   type=int,   default=21)
+    parser.add_argument("--min-rank", type=float, default=0.10)
+    parser.add_argument("--stop-loss", type=float, default=0.0, help="Hard stop below entry (0 = off)")
     parser.add_argument("--no-accel", action="store_true")
     parser.add_argument("--seed",     type=int,   default=42)
     args = parser.parse_args()
@@ -84,6 +85,7 @@ def main() -> None:
         review_days          = args.review,
         min_entry_rank       = args.min_rank,
         require_acceleration = not args.no_accel,
+        stop_loss            = args.stop_loss,
     )
 
     # Inject synthetic benchmark into result for comparison section of report
