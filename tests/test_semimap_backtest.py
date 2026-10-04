@@ -132,3 +132,21 @@ class TestMapPipeline:
                            0.001, 0.001, core, "VVSM.DE")
         assert lt["benchmark"]["ticker"] == "VVSM.DE"
         assert "cagr" in lt["benchmark"]
+
+
+class TestRunSemimapBacktest:
+    def test_portfolio_mode_report_and_curves(self, tmp_path):
+        from semimap_backtest import run_semimap_backtest, save_semimap_report
+        start = str((pd.Timestamp.today() - pd.DateOffset(years=2)).date())
+        r = run_semimap_backtest(mode="portfolio", start=start, synthetic=True)
+        assert set(r["curves"]) == {"core_etf_only", "model_portfolio"}
+        assert "MODEL PORTFOLIO" in r["text"] and "SYNTHETIC DATA" in r["text"]
+        assert "SHORT-TERM" not in r["text"]
+        txt, csv = save_semimap_report(r, tmp_path)
+        assert txt.name.endswith("-synthetic.txt") and "\x1b[" not in txt.read_text()
+        assert list(pd.read_csv(csv).columns) == ["date", "core_etf_only", "model_portfolio"]
+
+    def test_unknown_mode(self):
+        from semimap_backtest import run_semimap_backtest
+        with pytest.raises(ValueError):
+            run_semimap_backtest(mode="weekly", synthetic=True)

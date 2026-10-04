@@ -81,7 +81,7 @@ with st.sidebar:
 
 # ── Tabs ───────────────────────────────────────────────────────────────────────
 
-(T_SCAN, T_UNIV, T_PT, T_BT, T_LTB, T_LTS, T_WF, T_ST, T_MC, T_SIP, T_SIM,
+(T_SCAN, T_UNIV, T_PT, T_BT, T_LTB, T_LTS, T_SEMI, T_WF, T_ST, T_MC, T_SIP, T_SIM,
  T_PORT, T_REP, T_BENCH, T_SET) = st.tabs([
     "📊 Daily Scan",
     "🌌 Universe",
@@ -89,6 +89,7 @@ with st.sidebar:
     "📈 ST Backtest",
     "🏦 LT Backtest",
     "🔭 LT Screener",
+    "🔬 Semis Backtest",
     "🔄 Walk-Forward",
     "💪 Stress Tests",
     "🎲 Monte Carlo",
@@ -688,6 +689,85 @@ with T_LTS:
             st.error(f"Screener failed: {exc}")
             st.text(_strip(buf.getvalue()))
             st.exception(exc)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB — Semis Backtest (Semiconductor Map stocks, EUR)
+# ══════════════════════════════════════════════════════════════════════════════
+
+with T_SEMI:
+    st.header("Semiconductor Map Backtest")
+    st.caption("Stocks from semimap/ with every price converted to EUR: your model portfolio vs its "
+               "core ETF, plus the short-term and long-term strategies run on the same stocks.")
+
+    from semimap_backtest import MODES, CURVE_LABELS, load_map
+
+    try:
+        _, _sm_ports = load_map()
+        _sm_port_ids, _sm_port_default = list(_sm_ports["portfolios"]), _sm_ports["default"]
+    except Exception:
+        _sm_port_ids, _sm_port_default = ["model"], "model"
+
+    _sm_mode_labels = {"all": "All three", "portfolio": "Model portfolio",
+                       "short": "Short-term strategy", "long": "Long-term strategy"}
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        sm_mode  = st.selectbox("Backtest", list(MODES), format_func=_sm_mode_labels.get, key="sm_mode")
+        sm_port  = st.selectbox("Portfolio", _sm_port_ids, index=_sm_port_ids.index(_sm_port_default),
+                                key="sm_port")
+    with c2:
+        sm_start = st.date_input("Start", value=pd.Timestamp("2016-01-01"), key="sm_start")
+        sm_end   = st.date_input("End", value=pd.Timestamp.today(), key="sm_end")
+    with c3:
+        sm_equity = st.number_input("Starting capital (EUR)", value=10_000, min_value=100, step=1_000, key="sm_equity")
+        sm_rebal  = st.number_input("Portfolio rebalance (trading days)", value=63, min_value=1, step=21, key="sm_rebal")
+    with c4:
+        sm_slots    = st.number_input("LT slots", value=6, min_value=1, max_value=19, key="sm_slots")
+        sm_lt_rebal = st.number_input("LT rebalance (days)", value=63, min_value=1, step=21, key="sm_lt_rebal")
+    sm_synth = st.checkbox("Offline test data (random walks, not market prices)", value=False, key="sm_synth")
+
+    if st.button("▶ Run Semis Backtest", type="primary", key="btn_semis"):
+        if sm_start >= sm_end:
+            st.warning("Start must be before End.")
+            st.stop()
+        buf = io.StringIO()
+        try:
+            from semimap_backtest import run_semimap_backtest, save_semimap_report
+            with st.status("Running Semis backtest…", expanded=True) as status:
+                with contextlib.redirect_stdout(buf):
+                    _sm_res = run_semimap_backtest(
+                        mode=sm_mode, start=str(sm_start), end=str(sm_end),
+                        equity=float(sm_equity), portfolio=sm_port,
+                        rebalance=int(sm_rebal), slots=int(sm_slots),
+                        lt_rebalance=int(sm_lt_rebal), synthetic=sm_synth,
+                    )
+                _sm_txt, _sm_csv = save_semimap_report(_sm_res)
+                status.update(label="Semis backtest complete!", state="complete")
+            st.session_state["semis_result"] = {**_sm_res, "saved": (_sm_txt.name, _sm_csv.name)}
+        except Exception as exc:
+            st.error(f"Semis backtest failed: {exc}")
+            st.text(_strip(buf.getvalue()))
+            st.exception(exc)
+
+    _sm_last = st.session_state.get("semis_result")
+    if _sm_last:
+        import plotly.graph_objects as go
+        if _sm_last["synthetic"]:
+            st.warning("These results use offline test data (random walks), not market prices.")
+        _sm_colors = {"model_portfolio": "#4e79a7", "core_etf_only": "#9c9c9c",
+                      "short_term": "#59a14f", "long_term": "#f28e2b"}
+        _sm_fig = go.Figure()
+        for _k, _ser in _sm_last["curves"].items():
+            _sm_fig.add_trace(go.Scatter(
+                x=_ser.index, y=_ser.values, mode="lines", name=CURVE_LABELS.get(_k, _k),
+                line=dict(color=_sm_colors.get(_k), width=2.5 if _k == "model_portfolio" else 1.6,
+                          dash="dot" if _k == "core_etf_only" else "solid"),
+            ))
+        _sm_fig.update_layout(yaxis_title="Equity (EUR)", height=420,
+                              margin=dict(l=10, r=10, t=30, b=10), hovermode="x unified")
+        st.plotly_chart(_sm_fig, use_container_width=True)
+        st.code(_strip(_sm_last["text"]), language=None)
+        st.caption(f"Saved to reports/{_sm_last['saved'][0]} and reports/{_sm_last['saved'][1]}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

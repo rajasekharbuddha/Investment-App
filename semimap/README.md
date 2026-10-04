@@ -46,6 +46,8 @@ python src/run_backtest_semimap.py --mode long --slots 5   # momentum rotation o
 - **portfolio:** the weights in `portfolios.json` (50% core ETF + satellites), rebalanced every 63 trading days by default, compared with holding only the core ETF. Shows year-by-year returns and what each holding contributed. VVSM.DE only trades from late 2020, so earlier dates use the returns of SMH (VanEck's US ETF on the same index) converted to EUR. Companies that list later, such as CoreWeave, join at the first rebalance after their first price.
 - **short / long:** the app's existing short-term and long-term backtest engines with the map's stocks as the universe, compared with the core ETF.
 
+The same backtest is on the **Semis Backtest** tab in both the desktop and browser apps, with an equity-curve chart.
+
 Reports go to `reports/semimap-backtest-<date>.txt` and the equity curves to a matching `.csv`. `--synthetic` swaps in random-walk prices so the pipeline can be tested offline; its numbers mean nothing.
 
 `tests/test_semimap.py` checks that ids are unique, every weight points to a real company, and each portfolio adds up to 100%.

@@ -127,8 +127,8 @@ Both modes are accessible from either the desktop GUI or the browser UI. All `sr
 
 ```
 InvestmentApp/
-├── app.py                    # Tkinter desktop GUI — 14 tabs
-├── app_web.py                # Streamlit browser app — 15 tabs
+├── app.py                    # Tkinter desktop GUI — 15 tabs
+├── app_web.py                # Streamlit browser app — 16 tabs
 ├── CLAUDE.md                 # Guidance for Claude Code sessions working in this repo
 ├── .streamlit/
 │   └── config.toml           # Streamlit config (skips email prompt, sets port 8501)
@@ -360,7 +360,7 @@ python src/run_backtest_sip.py --regime-reserve 0      # disable reserve (100% d
 
 ## Desktop App Tabs
 
-Launch with `python app.py`. Fourteen tabs across the top — full feature parity with the browser app.
+Launch with `python app.py`. Fifteen tabs across the top — full feature parity with the browser app.
 
 ### Daily Scan
 Select markets (US / EU / IN / All), an as-of date (today or a past date for historical simulation), and optional quality filter. Runs the live signal scan. Output shows ENTER / NEAR / WAIT / SKIP decisions with ATR, gate details, stop levels, and position sizing. Portfolio is auto-saved and journal is updated after each run.
@@ -380,6 +380,9 @@ Two sub-tools in one tab:
 **Screener** — fundamental + technical quality screener. Produces a tiered report (BUY / NEAR / WATCH) with Q-scores, red-flag alerts, and an Exit Watch block per stock. Configure **Slots** alongside Markets/Min-Q/Top-N IN: new Tier-1 ENTER signals are automatically sized equal-weight (account equity ÷ slots) and added to the portfolio with real share counts, capped to however many slots are actually empty — no more manually filling in `shares`/`cost` after the fact. Each new position also stores the fundamental Exit Watch thresholds (ROE floor, D/E ceiling, revenue-growth/FCF sign, entry P/E) captured at that moment, so a later Portfolio refresh can evaluate them against *today's* numbers.
 
 **Backtest** — quarterly momentum rebalancing backtest with configurable slots, rebalance interval, breakdown exit toggle, and momentum floor.
+
+### Semis Backtest
+Backtests the stocks on the Semiconductor Dependency Map (`semimap/`) in EUR: your model portfolio against its core ETF, plus the short-term and long-term strategies run on the same stocks. Set the backtest (all three, or one), dates, starting capital, portfolio, rebalance interval and long-term slots. Shows an equity-curve chart and the full report, saved to `reports/semimap-backtest-<date>.txt` with the curves in a matching `.csv`. **Offline test data** swaps in random walks to check the pipeline without a network; those numbers mean nothing. Same as `python src/run_backtest_semimap.py`.
 
 ### Walk-Forward
 Rolling optimisation. Configure market, years of history, train/test window size (trading days), and anchored vs rolling mode.
@@ -437,7 +440,7 @@ Adjust account size, position limits, risk parameters, momentum periods, and uni
 
 ## Browser App Tabs
 
-Launch with `streamlit run app_web.py` → open **http://localhost:8501**. Fifteen tabs — full feature parity with the desktop app.
+Launch with `streamlit run app_web.py` → open **http://localhost:8501**. Sixteen tabs — full feature parity with the desktop app.
 
 Sidebar controls (equity, commission, slippage, strategy flags) apply to every tab.
 
@@ -458,6 +461,9 @@ Long-term quarterly rebalancing backtest. Interactive equity curve chart. Config
 
 ### LT Screener
 Fundamental screener. Full tiered output (BUY / NEAR / WATCH) with Exit Watch blocks per stock. Configure **Equity** and **Slots** alongside Markets/Min-Q/Universe size: new Tier-1 ENTER signals are automatically sized equal-weight and added to the portfolio with real share counts (capped to available empty slots), and each stores the fundamental Exit Watch thresholds captured at that moment for later live evaluation.
+
+### Semis Backtest
+Backtests the stocks on the Semiconductor Dependency Map (`semimap/`) in EUR: your model portfolio against its core ETF, plus the short-term and long-term strategies run on the same stocks. Set the backtest (all three, or one), dates, starting capital, portfolio, rebalance interval and long-term slots. Shows an equity-curve chart and the full report, saved to `reports/semimap-backtest-<date>.txt` with the curves in a matching `.csv`. **Offline test data** swaps in random walks to check the pipeline without a network; those numbers mean nothing. Same as `python src/run_backtest_semimap.py`.
 
 ### Walk-Forward
 Rolling optimisation. Configure train/test window size and anchored vs rolling mode.
