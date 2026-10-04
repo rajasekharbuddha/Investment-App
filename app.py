@@ -163,6 +163,7 @@ class App(tk.Tk):
             ("posttrade",   "  Post-Trade  ",      self._tab_posttrade),
             ("backtest",    "  Backtest  ",        self._tab_backtest),
             ("longterm",    "  Long-Term  ",       self._tab_longterm),
+            ("semis",       "  Semis Backtest  ",  self._tab_semis),
             ("walkforward", "  Walk-Forward  ",    self._tab_walkforward),
             ("stresstest",  "  Stress Tests  ",    self._tab_stresstest),
             ("montecarlo",  "  Monte Carlo  ",     self._tab_montecarlo),
@@ -2533,6 +2534,140 @@ class App(tk.Tk):
         self._mc_ax.clear()
         self._style_sim_axis(self._mc_ax)
         self._mc_canvas.draw()
+
+    # ── Semis Backtest (Semiconductor Map stocks, EUR) ───────────────────────
+
+    def _tab_semis(self, parent):
+        from matplotlib.figure import Figure
+        from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+        from semimap_backtest import MODES, load_map
+
+        bar = tk.Frame(parent, bg=self.BG, padx=14, pady=12)
+        bar.pack(fill="x")
+        self._sm_mode   = self._combo(bar, "Mode:", list(MODES), "all", 9)
+        self._sm_start  = self._entry(bar, "Start:", "2016-01-01", 11)
+        self._sm_end    = self._entry(bar, "End:", "", 11)
+        self._sm_equity = self._entry(bar, "Equity EUR:", "10000", 8)
+        try:
+            _, ports = load_map()
+            port_ids, port_default = list(ports["portfolios"]), ports["default"]
+        except Exception:
+            port_ids, port_default = ["model"], "model"
+        self._sm_port = self._combo(bar, "Portfolio:", port_ids, port_default, 10)
+
+        bar2 = tk.Frame(parent, bg=self.BG, padx=14, pady=0)
+        bar2.pack(fill="x")
+        self._sm_rebal    = self._entry(bar2, "Rebalance (trading days):", "63", 4)
+        self._sm_slots    = self._entry(bar2, "LT slots:", "6", 3)
+        self._sm_lt_rebal = self._entry(bar2, "LT rebalance (days):", "63", 4)
+        self._sm_synth = tk.BooleanVar(value=False)
+        tk.Checkbutton(bar2, text="Offline test data", variable=self._sm_synth,
+                       bg=self.BG, fg=self.MUTED, selectcolor=self.SURFACE,
+                       activebackground=self.BG, activeforeground=self.ACCENT,
+                       font=(_MONO, 9)).pack(side="left", padx=(0, 16))
+        self._sm_btn = self._button(bar2, "▶  Run Semis Backtest", self._run_semis)
+        self._sm_btn.pack(side="left")
+        self._button(bar2, "Clear", self._clear_semis, w=6).pack(side="left", padx=(8, 0))
+
+        tk.Label(parent,
+                 text="  Stocks from semimap/ in EUR: model portfolio vs core ETF, plus the short-term"
+                      " and long-term strategies on the same stocks. Offline test data = random walks.",
+                 bg=self.BG, fg=self.MUTED, font=(_MONO, 9), anchor="w"
+                 ).pack(fill="x", padx=14, pady=(8, 2))
+
+        self._sm_fig = Figure(figsize=(8, 3.2), dpi=100, facecolor=self.BG2)
+        self._sm_ax  = self._sm_fig.add_subplot(111)
+        self._style_sim_axis(self._sm_ax)
+        self._sm_canvas = FigureCanvasTkAgg(self._sm_fig, master=parent)
+        self._sm_canvas.get_tk_widget().pack(fill="x", padx=14, pady=(0, 8))
+
+        self._sm_out = self._terminal(parent)
+
+    def _run_semis(self):
+        if self._check_busy():
+            return
+        try:
+            start = pd.Timestamp(self._sm_start.get().strip()).strftime("%Y-%m-%d")
+            end_s = self._sm_end.get().strip()
+            end   = pd.Timestamp(end_s).strftime("%Y-%m-%d") if end_s else ""
+        except ValueError:
+            messagebox.showerror("Invalid input", "Start/End must be dates like 2016-01-01 (End may be blank).")
+            return
+        try:
+            equity   = float(self._sm_equity.get().strip())
+            rebal    = int(self._sm_rebal.get().strip())
+            slots    = int(self._sm_slots.get().strip())
+            lt_rebal = int(self._sm_lt_rebal.get().strip())
+        except ValueError:
+            messagebox.showerror("Invalid input",
+                                 "Equity must be a number; rebalance, LT slots and LT rebalance must be whole numbers.")
+            return
+        if min(rebal, slots, lt_rebal) < 1 or equity <= 0:
+            messagebox.showerror("Invalid input", "Equity, rebalance, LT slots and LT rebalance must be above zero.")
+            return
+
+        self._clear(self._sm_out)
+        self._target = self._sm_out
+        self._busy   = True
+        self._sm_btn.configure(state="disabled", text="Running…")
+        self._status.set("Running Semis backtest…")
+        threading.Thread(
+            target=self._worker_semis,
+            args=(self._sm_mode.get(), start, end, equity, self._sm_port.get(),
+                  rebal, slots, lt_rebal, self._sm_synth.get()),
+            daemon=True,
+        ).start()
+
+    def _worker_semis(self, mode: str, start: str, end: str, equity: float, portfolio: str,
+                      rebalance: int, slots: int, lt_rebalance: int, synthetic: bool):
+        import contextlib, traceback
+        w = _QWriter(self._q)
+        try:
+            from semimap_backtest import run_semimap_backtest, save_semimap_report
+            with contextlib.redirect_stdout(w), contextlib.redirect_stderr(w):
+                result = run_semimap_backtest(
+                    mode=mode, start=start, end=end, equity=equity, portfolio=portfolio,
+                    rebalance=rebalance, slots=slots, lt_rebalance=lt_rebalance,
+                    synthetic=synthetic,
+                )
+            w.write(result["text"] + "\n")
+            txt, csv = save_semimap_report(result)
+            w.write(f"\n  Report saved -> reports/{txt.name}  (equity curves: reports/{csv.name})\n")
+            self.after(0, lambda: self._update_semis_chart(result["curves"]))
+            self.after(0, self._refresh_reports)
+        except Exception as exc:
+            w.write(f"\n\033[91mError: {exc}\033[0m\n{traceback.format_exc()}")
+        finally:
+            self._busy = False
+            self.after(0, lambda: self._sm_btn.configure(state="normal", text="▶  Run Semis Backtest"))
+            self.after(0, lambda: self._status.set(
+                f"Semis backtest complete — {datetime.now().strftime('%H:%M:%S')}"))
+
+    def _update_semis_chart(self, curves: dict):
+        from semimap_backtest import CURVE_LABELS
+        ax = self._sm_ax
+        ax.clear()
+        self._style_sim_axis(ax)
+        colors = {"model_portfolio": self.ACCENT, "core_etf_only": self.MUTED,
+                  "short_term": self.GREEN, "long_term": self.YELLOW}
+        for key, series in curves.items():
+            ax.plot(series.index, series.values, color=colors.get(key, self.CYAN),
+                    linewidth=1.6 if key == "model_portfolio" else 1.1,
+                    linestyle="--" if key == "core_etf_only" else "-",
+                    label=CURVE_LABELS.get(key, key))
+        ax.set_ylabel("Equity (EUR)")
+        if curves:
+            legend = ax.legend(loc="upper left", fontsize=8, facecolor=self.BG2, edgecolor=self.SURFACE)
+            for text in legend.get_texts():
+                text.set_color(self.TEXT)
+        self._sm_fig.tight_layout()
+        self._sm_canvas.draw()
+
+    def _clear_semis(self):
+        self._clear(self._sm_out)
+        self._sm_ax.clear()
+        self._style_sim_axis(self._sm_ax)
+        self._sm_canvas.draw()
 
     def _run_longterm(self):
         if self._check_busy():

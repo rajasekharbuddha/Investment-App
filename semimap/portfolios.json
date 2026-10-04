@@ -11,6 +11,12 @@
         "ticker": "VVSM",
         "exchange": "Xetra",
         "currency": "EUR",
+        "yfTicker": "VVSM.DE",
+        "proxy": {
+          "ticker": "SMH",
+          "currency": "USD",
+          "note": "VanEck's US-listed ETF on the same index (MVIS US Listed Semiconductor 25). Used only for backtests, for dates before VVSM.DE has prices."
+        },
         "holds": ["nvidia", "tsmc", "asml", "amd"],
         "holdsOther": ["Broadcom"]
       },

@@ -12,10 +12,10 @@ Mastermind Pro: a systematic stock research/signal/backtesting platform for US, 
 # Install deps
 python -m pip install -r requirements.txt
 
-# Run the desktop app (Tkinter, 14 tabs)
+# Run the desktop app (Tkinter, 15 tabs)
 python app.py
 
-# Run the browser app (Streamlit, 15 tabs) — opens http://localhost:8501
+# Run the browser app (Streamlit, 16 tabs) — opens http://localhost:8501
 streamlit run app_web.py
 
 # Run all tests
@@ -40,6 +40,7 @@ python src/run_walkforward.py --market IN --years 5
 python src/run_montecarlo.py --trades reports/some-trades.csv
 python src/run_stresstests.py --market IN
 python src/run_replacement_list.py --market IN
+python src/run_backtest_semimap.py --mode all   # Semiconductor Map stocks, in EUR (also the "Semis Backtest" tab)
 ```
 
 Three pre-existing test failures are unrelated to any recent work and not a regression signal by themselves: `test_backtest.py::TestPositionSizeCap::{test_no_single_trade_costs_more_than_20pct,test_size_capped_decision_engine}` and `test_gates.py::TestGate4Liquidity::test_mult_tightens`.
