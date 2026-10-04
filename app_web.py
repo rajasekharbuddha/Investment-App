@@ -655,6 +655,10 @@ with T_LTS:
         lts_equity = st.number_input("Equity (for equal-weight sizing)", value=equity_s, key="lts_equity")
     with lts_c2:
         lts_slots  = st.number_input("Slots (equal-weight portfolio)", value=10, min_value=1, max_value=30, key="lts_slots")
+    lts_graham = st.checkbox(
+        "Graham filter — keep only stocks passing current ratio ≥ 2, "
+        "LT debt ≤ net current assets, P/E × P/B ≤ 22.5",
+        value=False, key="lts_graham")
 
     if st.button("▶ Run Screener", type="primary", key="btn_lts"):
         if not lts_markets:
@@ -675,6 +679,7 @@ with T_LTS:
                         top_n_in=int(lts_top_n),
                         equity=float(lts_equity),
                         max_positions=int(lts_slots),
+                        graham_filter=lts_graham,
                     )
                 status.update(label="Screen complete!", state="complete")
 

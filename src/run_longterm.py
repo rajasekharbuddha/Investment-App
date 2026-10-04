@@ -20,6 +20,7 @@ Usage
   python src/run_longterm.py --no-near               # ENTER signals only
   python src/run_longterm.py --refresh-cache         # force re-fetch fundamentals
   python src/run_longterm.py --top-n-in 250          # universe size (default 250)
+  python src/run_longterm.py --graham                # keep only Graham defensive passes
 """
 
 from __future__ import annotations
@@ -64,6 +65,10 @@ def _pe(val, dec=1) -> str:
     return f"{val:.{dec}f}" if val is not None else "N/A"
 
 
+def _mos_str(mos) -> str:
+    return f"{mos*100:+.0f}%" if mos is not None else "N/A"
+
+
 def _bar(score: float, width: int = 10) -> str:
     """ASCII progress bar for a 0-100 score."""
     filled = round(score / 100 * width)
@@ -95,7 +100,8 @@ def compute_exit_thresholds(fund_data: dict) -> dict:
 
     de = fund_data.get("debt_equity")
     if de is not None:
-        th["de_max"] = max(2.0, round(de * 2, 2))
+        th["de_max"]   = max(2.0, round(de * 2, 2))
+        th["de_units"] = "ratio"
 
     fcf = fund_data.get("fcf_yield")
     if fcf is not None:
@@ -146,7 +152,10 @@ def check_lt_exit(
             verdict = "WATCH"
             reasons.append(f"SMA_50 < SMA_200 for {days_below_sma200} day(s) -- watching for confirmation")
 
-    th = position.get("exit_thresholds") or {}
+    th = dict(position.get("exit_thresholds") or {})
+    if th.get("de_max") is not None and th.get("de_units") != "ratio":
+        # Captured before fundamental.py converted yfinance's percent D/E to a ratio
+        th["de_max"] = max(2.0, th["de_max"] / 100)
     if fund_data:
         roe = fund_data.get("roe")
         if roe is not None and th.get("roe_min") is not None and roe < th["roe_min"]:
@@ -339,6 +348,7 @@ def run_longterm_screen(
     top_n_in: int      = 250,
     equity: float       = LT_EQUITY_DEFAULT,
     max_positions: int  = LT_MAX_POSITIONS_DEFAULT,
+    graham_filter: bool = False,
 ) -> None:
     import pandas as pd
 
@@ -350,7 +360,7 @@ def run_longterm_screen(
     from select_stocks import quality_score_all, dynamic_watchlist
     from fundamental import (
         fetch_all_fundamentals, score_fundamentals,
-        fundamental_grade, red_flags, WEIGHTS,
+        fundamental_grade, red_flags, graham_check, WEIGHTS, GRAHAM,
     )
 
     active_markets = [m.strip().upper() for m in markets.split(",")]
@@ -363,7 +373,8 @@ def run_longterm_screen(
     print(f"\n{_hdr}{'='*72}{_rst}")
     print(f"\033[1m\033[97m  MASTERMIND PRO -- LONG-TERM SCREENER{_rst}")
     print(f"  {today.strftime('%Y-%m-%d')}  |  Markets: {', '.join(active_markets)}"
-          f"  |  Min-Q: {min_q}  |  Signals: ENTER+{'NEAR' if include_near else 'only'}")
+          f"  |  Min-Q: {min_q}  |  Signals: ENTER+{'NEAR' if include_near else 'only'}"
+          + ("  |  Graham filter: ON" if graham_filter else ""))
     print(f"{_hdr}{'='*72}{_rst}")
 
     # -- 1. Build universe & fetch price data ---------------------------------
@@ -476,9 +487,22 @@ def run_longterm_screen(
             "flags":       flags,
             "grade":       fundamental_grade(f_score),
             "data_pts":    data_pts,
+            "graham":      graham_check(fd),
         })
 
     scored.sort(key=lambda x: x["combined"], reverse=True)
+
+    if graham_filter:
+        failed = [s for s in scored if not s["graham"]["passed"]]
+        scored = [s for s in scored if s["graham"]["passed"]]
+        print(f"  Graham filter: {len(scored)} passed, {len(failed)} excluded"
+              f"  (current ratio >= {GRAHAM['min_current_ratio']:g},"
+              f" LT debt <= net current assets, P/E x P/B <= {GRAHAM['max_pe_x_pb']:g})")
+        if failed:
+            print("  \033[90mExcluded: " + ", ".join(s["ticker"] for s in failed) + "\033[0m")
+        if not scored:
+            print("  No candidates passed the Graham filter -- journal and portfolio not updated.")
+            return
 
     # -- 4. Tiered report ------------------------------------------------------
     print(f"\n[4/4] Generating report...\n")
@@ -556,6 +580,22 @@ def run_longterm_screen(
             )
             print(f"     \033[90mScores: {score_line}\033[0m")
 
+            # - Graham defensive tests -
+            g     = s["graham"]
+            gt    = g["tests"]
+            _mark = lambda v: "N/A" if v is None else ("pass" if v else "FAIL")
+            gn    = g["graham_number"]
+            mos   = g["margin_of_safety"]
+            gn_str  = p_fmt.format(gn) if gn else "N/A"
+            mos_str = _mos_str(mos)
+            g_col   = "92" if g["passed"] else "93"
+            print(f"     \033[{g_col}mGraham: {'PASS' if g['passed'] else 'fail'}\033[0m"
+                  f"  CurRatio={_x(fd.get('current_ratio'))} ({_mark(gt['current_ratio'])})"
+                  f"  Debt<=NCA ({_mark(gt['debt_vs_nca'])})"
+                  f"  PExPB ({_mark(gt['pe_x_pb'])})"
+                  f"  G#={gn_str}  MoS={mos_str}"
+                  + ("  [financial: balance-sheet tests skipped]" if g["financial"] else ""))
+
             # - Red flags -
             for flag in s["flags"]:
                 print(f"     \033[93m!  {flag}\033[0m")
@@ -631,8 +671,9 @@ def run_longterm_screen(
     print(f"\033[1m\033[97m  SUMMARY TABLE\033[0m")
     print(f"{_hdr}{'='*72}{_rst}")
     print(f"  {'Ticker':<18}  {'Combined':>8}  {'Fund':>6}  {'Tech':>5}  "
-          f"{'Grade':<8}  {'Signal':<7}  P/E   D/E   ROE")
-    print(f"  {'-'*18}  {'-'*8}  {'-'*6}  {'-'*5}  {'-'*8}  {'-'*7}  {'-'*4}  {'-'*4}  {'-'*5}")
+          f"{'Grade':<8}  {'Signal':<7}  P/E   D/E   ROE  Graham   MoS")
+    print(f"  {'-'*18}  {'-'*8}  {'-'*6}  {'-'*5}  {'-'*8}  {'-'*7}  {'-'*4}  {'-'*4}  {'-'*5}"
+          f"  {'-'*6}  {'-'*5}")
     for s in scored:
         fd   = s["fund_data"]
         tier = ("T1" if s["combined"] >= TIER1 else
@@ -642,7 +683,9 @@ def run_longterm_screen(
               f"  {s['tech_score']:>5.0f}  {s['grade']:<8}  {s['decision']:<7}"
               f"  {_pe(fd.get('pe'),0):>4}"
               f"  {_x(fd.get('debt_equity'),1):>5}"
-              f"  {_pct(fd.get('roe'),0):>5}")
+              f"  {_pct(fd.get('roe'),0):>5}"
+              f"  {'PASS' if s['graham']['passed'] else 'fail':<6}"
+              f"  {_mos_str(s['graham']['margin_of_safety']):>5}")
 
     print(f"\n{_hdr}{'='*72}{_rst}")
     print(f"\033[93m  DISCLAIMER: Research use only. Not financial advice.\033[0m")
@@ -683,6 +726,9 @@ def main() -> None:
                         help=f"Account equity for equal-weight sizing (default: {LT_EQUITY_DEFAULT:,.0f})")
     parser.add_argument("--slots",         type=int, default=LT_MAX_POSITIONS_DEFAULT,
                         help=f"Equal-weight portfolio slots (default: {LT_MAX_POSITIONS_DEFAULT})")
+    parser.add_argument("--graham",        action="store_true",
+                        help="Keep only stocks passing Graham's defensive tests "
+                             "(current ratio, debt vs net current assets, P/E x P/B)")
     args = parser.parse_args()
 
     run_longterm_screen(
@@ -693,6 +739,7 @@ def main() -> None:
         top_n_in      = args.top_n_in,
         equity        = args.equity,
         max_positions = args.slots,
+        graham_filter = args.graham,
     )
 
 

@@ -77,6 +77,7 @@ Both modes are accessible from either the desktop GUI or the browser UI. All `sr
 - Technical pre-gate: SMA_50 > SMA_200 + Close > SMA_200 + SMA_50 rising
 - Tiered output: **BUY**, **NEAR**, **WATCH** with combined quality score (0–100)
 - Per-stock **Exit Watch** block: SMA levels, gap %, and dynamic fundamental sell thresholds
+- Per-stock **Graham line** (*The Intelligent Investor* defensive tests): current ratio ≥ 2, long-term debt ≤ net current assets, P/E × P/B ≤ 22.5, plus the Graham number and margin of safety. An optional **Graham filter** drops stocks that fail
 
 ### Long-Term Backtest
 - Quarterly momentum rebalancing: rotate out of laggards, fill slots with top scorers
@@ -328,6 +329,7 @@ python src/run_backtest.py --market IN --start 2016-01-01
 python src/run_longterm.py
 python src/run_longterm.py --markets IN --no-near
 python src/run_longterm.py --equity 200000 --slots 15   # equal-weight sizing for new BUY signals
+python src/run_longterm.py --graham                     # keep only Graham defensive passes
 ```
 
 ### CLI — long-term backtest
@@ -377,7 +379,7 @@ Configure market, date range, and equity. Runs the full ATR-Dynamic short-term s
 ### Long-Term
 Two sub-tools in one tab:
 
-**Screener** — fundamental + technical quality screener. Produces a tiered report (BUY / NEAR / WATCH) with Q-scores, red-flag alerts, and an Exit Watch block per stock. Configure **Slots** alongside Markets/Min-Q/Top-N IN: new Tier-1 ENTER signals are automatically sized equal-weight (account equity ÷ slots) and added to the portfolio with real share counts, capped to however many slots are actually empty — no more manually filling in `shares`/`cost` after the fact. Each new position also stores the fundamental Exit Watch thresholds (ROE floor, D/E ceiling, revenue-growth/FCF sign, entry P/E) captured at that moment, so a later Portfolio refresh can evaluate them against *today's* numbers.
+**Screener** — fundamental + technical quality screener. Produces a tiered report (BUY / NEAR / WATCH) with Q-scores, red-flag alerts, and an Exit Watch block per stock. Configure **Slots** alongside Markets/Min-Q/Top-N IN: new Tier-1 ENTER signals are automatically sized equal-weight (account equity ÷ slots) and added to the portfolio with real share counts, capped to however many slots are actually empty — no more manually filling in `shares`/`cost` after the fact. Each new position also stores the fundamental Exit Watch thresholds (ROE floor, D/E ceiling, revenue-growth/FCF sign, entry P/E) captured at that moment, so a later Portfolio refresh can evaluate them against *today's* numbers. Tick **Graham filter** to keep only stocks that pass Graham's defensive tests.
 
 **Backtest** — quarterly momentum rebalancing backtest with configurable slots, rebalance interval, breakdown exit toggle, and momentum floor.
 
@@ -457,7 +459,7 @@ ATR-Dynamic short-term backtest. Renders an interactive equity curve chart. Incl
 Long-term quarterly rebalancing backtest. Interactive equity curve chart. Configurable rebalance interval (monthly / quarterly / semi-annual / annual), momentum floor, and SMA breakdown exit toggle.
 
 ### LT Screener
-Fundamental screener. Full tiered output (BUY / NEAR / WATCH) with Exit Watch blocks per stock. Configure **Equity** and **Slots** alongside Markets/Min-Q/Universe size: new Tier-1 ENTER signals are automatically sized equal-weight and added to the portfolio with real share counts (capped to available empty slots), and each stores the fundamental Exit Watch thresholds captured at that moment for later live evaluation.
+Fundamental screener. Full tiered output (BUY / NEAR / WATCH) with Exit Watch blocks per stock. Configure **Equity** and **Slots** alongside Markets/Min-Q/Universe size: new Tier-1 ENTER signals are automatically sized equal-weight and added to the portfolio with real share counts (capped to available empty slots), and each stores the fundamental Exit Watch thresholds captured at that moment for later live evaluation. Tick **Graham filter** to keep only stocks that pass Graham's defensive tests.
 
 ### Walk-Forward
 Rolling optimisation. Configure train/test window size and anchored vs rolling mode.
@@ -597,6 +599,19 @@ All runs use 100k initial equity, 0.10% slippage, 0.10% commission, dynamic univ
 | PEG ratio | 10% | Valuation vs growth |
 | P/B ratio | 5% | Asset backing |
 | Net margin | 5% | Net profitability |
+
+D/E is stored as a ratio (0.45 = 0.45×). yfinance reports `debtToEquity` as a percentage, so `fetch_fundamentals()` divides it by 100.
+
+**Graham defensive tests** (`graham_check()` in `src/fundamental.py`, from Benjamin Graham's *The Intelligent Investor*):
+
+| Test | Rule |
+|------|------|
+| Financial strength | Current ratio ≥ 2 |
+| Debt cover | Long-term debt ≤ net current assets (current assets − current liabilities) |
+| Moderate price | P/E × P/B ≤ 22.5 |
+| Graham number | √(22.5 × EPS × book value per share), shown with the margin of safety `(Graham number − price) ÷ Graham number` |
+
+Financial-sector stocks skip the two balance-sheet tests, since banks and insurers have no meaningful current ratio. Missing data counts as a fail. The tests are always shown in the report. With the Graham filter on (`--graham` or the checkbox in either app), failing stocks are excluded before tiering, so they can't become Tier-1 entries. Graham's 10–20-year earnings and dividend record rules are not included because yfinance only provides about 4 years of statements. The long-term backtest doesn't apply the filter, because historical fundamentals aren't available.
 
 **Tiered output:**
 - **BUY** (Q ≥ 70, all gates pass)

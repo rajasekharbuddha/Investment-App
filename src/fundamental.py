@@ -32,6 +32,17 @@ assert abs(sum(WEIGHTS.values()) - 1.0) < 1e-6, "Weights must sum to 1.0"
 
 _CACHE_FILE    = Path(__file__).parent.parent / "fundamental_cache.json"
 _CACHE_TTL     = timedelta(days=7)
+# Bump when the cached fields or their units change so stale entries are re-fetched.
+# v2: debt_equity converted from yfinance's percent to a ratio; Graham fields added.
+_CACHE_SCHEMA  = 2
+
+# ── Graham defensive-investor thresholds (The Intelligent Investor, ch. 14) ──
+GRAHAM: dict[str, float] = {
+    "min_current_ratio": 2.0,    # current assets >= 2x current liabilities
+    "max_pe_x_pb":       22.5,   # P/E x P/B <= 22.5 (15x earnings x 1.5x book)
+}
+# Banks/insurers have no meaningful current ratio — skip the balance-sheet tests
+GRAHAM_FINANCIAL_SECTORS = ("Financial Services", "Financial")
 
 
 # ── Utilities ────────────────────────────────────────────────────────────────
@@ -76,6 +87,8 @@ def _save_cache(cache: dict) -> None:
 
 
 def _is_fresh(entry: dict) -> bool:
+    if entry.get("_schema") != _CACHE_SCHEMA:
+        return False
     ts = entry.get("_cached_at")
     if not ts:
         return False
@@ -102,6 +115,8 @@ def fetch_fundamentals(ticker: str, use_cache: bool = True) -> dict:
     eps_growth
     fcf_yield       (freeCashflow / marketCap)
     market_cap
+    price, eps_ttm, book_value_ps
+    current_ratio, current_assets, current_liabilities, long_term_debt
     _error          (None or error string)
     """
     result: dict = {
@@ -122,7 +137,15 @@ def fetch_fundamentals(ticker: str, use_cache: bool = True) -> dict:
         "eps_growth":        None,
         "fcf_yield":         None,
         "market_cap":        None,
+        "price":             None,
+        "eps_ttm":           None,
+        "book_value_ps":     None,
+        "current_ratio":     None,
+        "current_assets":    None,
+        "current_liabilities": None,
+        "long_term_debt":    None,
         "_cached_at":        datetime.now().isoformat(),
+        "_schema":           _CACHE_SCHEMA,
         "_error":            None,
     }
 
@@ -151,7 +174,13 @@ def fetch_fundamentals(ticker: str, use_cache: bool = True) -> dict:
         result["revenue_growth"]  = _safe(info.get("revenueGrowth"))
         result["eps_growth"]      = _safe(info.get("earningsGrowth"))
         result["market_cap"]      = _safe(info.get("marketCap"))
-        result["debt_equity"]     = _safe(info.get("debtToEquity"))   # yfinance: already a ratio
+        # yfinance reports debtToEquity as a percentage (45.3 == 0.453x)
+        de_pct = _safe(info.get("debtToEquity"))
+        result["debt_equity"]     = de_pct / 100 if de_pct is not None else None
+        result["price"]           = _safe(info.get("currentPrice") or info.get("regularMarketPrice"))
+        result["eps_ttm"]         = _safe(info.get("trailingEps"))
+        result["book_value_ps"]   = _safe(info.get("bookValue"))
+        result["current_ratio"]   = _safe(info.get("currentRatio"))
 
         # FCF yield = freeCashflow / marketCap
         fcf = _safe(info.get("freeCashflow"))
@@ -176,6 +205,30 @@ def fetch_fundamentals(ticker: str, use_cache: bool = True) -> dict:
                         oldest  = float(rev.iloc[n_yrs])
                         if oldest > 0 and newest > 0:
                             result["revenue_cagr_3yr"] = (newest / oldest) ** (1 / n_yrs) - 1
+        except Exception:
+            pass
+
+        # Latest balance sheet — for Graham's "long-term debt <= net current assets"
+        try:
+            bs = t.balance_sheet
+            if bs is not None and not bs.empty:
+                latest = bs[bs.columns.max()]
+
+                def _row(*keys):
+                    for k in keys:
+                        if k in latest.index and latest[k] == latest[k]:  # not NaN
+                            return float(latest[k])
+                    return None
+
+                result["current_assets"]      = _row("Current Assets", "Total Current Assets")
+                result["current_liabilities"] = _row("Current Liabilities", "Total Current Liabilities")
+                result["long_term_debt"]      = _row("Long Term Debt",
+                                                     "Long Term Debt And Capital Lease Obligation")
+                if result["long_term_debt"] is None and _safe(info.get("totalDebt")) == 0:
+                    result["long_term_debt"] = 0.0   # debt-free: yfinance omits the row
+                ca, cl = result["current_assets"], result["current_liabilities"]
+                if result["current_ratio"] is None and ca is not None and cl:
+                    result["current_ratio"] = ca / cl
         except Exception:
             pass
 
@@ -326,6 +379,63 @@ def fundamental_grade(score: float) -> str:
     if score >= 60: return "Good"
     if score >= 45: return "Fair"
     return "Weak"
+
+
+def graham_number(data: dict) -> Optional[float]:
+    """Graham number = sqrt(22.5 x EPS x book value per share); None if either is <= 0."""
+    eps, bvps = data.get("eps_ttm"), data.get("book_value_ps")
+    if eps is None or bvps is None or eps <= 0 or bvps <= 0:
+        return None
+    return (22.5 * eps * bvps) ** 0.5
+
+
+def graham_check(data: dict) -> dict:
+    """
+    Benjamin Graham's defensive-investor safety tests (The Intelligent Investor):
+
+      current_ratio   current assets >= 2x current liabilities
+      debt_vs_nca     long-term debt <= net current assets
+      pe_x_pb         P/E x P/B <= 22.5
+
+    Each test is True / False, or None when data is missing. The two
+    balance-sheet tests are skipped (None) for financial-sector stocks.
+    A stock "passes" only if every applicable test is True — missing data
+    counts as a fail, in keeping with Graham's conservatism.
+
+    Also returns the Graham number and the margin of safety
+    (graham_number - price) / graham_number; positive means price is below it.
+    """
+    is_fin = data.get("sector") in GRAHAM_FINANCIAL_SECTORS
+    tests: dict[str, Optional[bool]] = {}
+
+    cr = data.get("current_ratio")
+    tests["current_ratio"] = (None if is_fin or cr is None
+                              else cr >= GRAHAM["min_current_ratio"])
+
+    ca, cl, ltd = (data.get("current_assets"), data.get("current_liabilities"),
+                   data.get("long_term_debt"))
+    tests["debt_vs_nca"] = (None if is_fin or ca is None or cl is None or ltd is None
+                            else ltd <= ca - cl)
+
+    pe, pb = data.get("pe"), data.get("pb")
+    tests["pe_x_pb"] = (None if pe is None or pb is None or pe <= 0 or pb <= 0
+                        else pe * pb <= GRAHAM["max_pe_x_pb"])
+
+    applicable = ["pe_x_pb"] if is_fin else list(tests)
+    passed     = all(tests[k] is True for k in applicable)
+
+    gn    = graham_number(data)
+    price = data.get("price")
+    mos   = (gn - price) / gn if gn and price else None
+
+    return {
+        "tests":         tests,
+        "applicable":    applicable,
+        "passed":        passed,
+        "financial":     is_fin,
+        "graham_number": gn,
+        "margin_of_safety": mos,
+    }
 
 
 def red_flags(data: dict) -> list[str]:

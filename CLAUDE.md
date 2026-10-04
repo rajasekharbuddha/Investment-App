@@ -94,6 +94,7 @@ All three modes route through the same `data.py` (yfinance + parquet cache in `d
 
 - `update_trailing_stop()`'s `trail_mult` parameter was silently ignored in the backtest until 2026-06-07 (hardcoded to 5.5× regardless of config) — if you see stale comments/results referencing this, that's why.
 - `RISK["MAX_POSITION_SIZE_PCT"]` in `backtest.py` is the only effective position-size cap; `risk_pct` in `MARKET_PARAMS` does not affect backtest sizing despite looking like it should.
+- `fundamental.py` stored yfinance's `debtToEquity` (a percentage, e.g. 45.3) as if it were a ratio until 2026-10-04, so almost every company with any debt got the bottom D/E score. It's now divided by 100; cache entries without `_schema == _CACHE_SCHEMA` are re-fetched, and `check_lt_exit()` converts `de_max` thresholds stored without `de_units: "ratio"` (positions entered before the fix).
 - IN's dynamic universe used to be capped at the Nifty 250 constituent list regardless of the configured Top-N, so raising "Top-N IN" above ~250 had no effect. `src/universe.py`'s `build_in_universe()` now sources Nifty 500 first (falls back to Nifty 250, then Nifty 100, only if that fetch fails) — if you touch universe sizing, verify against the *actual* index list size, not just that a parameter threads through code.
 
 ### `RUN17_STRATEGY.md`
