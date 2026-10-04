@@ -1,0 +1,105 @@
+{
+  "meta": {
+    "title": "Semiconductor Dependency Map",
+    "pricesAsOf": "2026-09-01",
+    "pricesSource": "manual",
+    "disclaimer": "Informational, not investment advice. I am not a financial or tax advisor. Prices are point-in-time and may be stale; verify before acting."
+  },
+  "moats": {
+    "monopoly":      { "label": "Monopoly",                       "detail": "No real substitute",                          "color": "#e8a83c" },
+    "oligopoly":     { "label": "Oligopoly",                      "detail": "2–3 players",                                 "color": "#c48a3f" },
+    "competitive":   { "label": "Competitive",                    "detail": "Several real rivals",                         "color": "#4a9e8e" },
+    "indispensable": { "label": "Indispensable but competitive",  "detail": "Broad, no single bottleneck",                 "color": "#8a6fd6" },
+    "diversified":   { "label": "Diversified brand",              "detail": "Chips are one input of many",                 "color": "#4a6fa5" },
+    "neocloud":      { "label": "Pure-play neocloud",             "detail": "High risk, no fallback business",             "color": "#d68a4a" },
+    "adjacent":      { "label": "Adjacent",                       "detail": "Related but off the strict fabrication chain", "color": "#5a7d9e" },
+    "noninvestable": { "label": "Non-investable",                 "detail": "Nonprofit or unproven R&D",                   "color": "#7a8699", "dashed": true }
+  },
+  "tiers": [
+    {
+      "tier": 1,
+      "label": "End product / brand / hyperscaler",
+      "detail": "decides what device or compute to build",
+      "callout": {
+        "title": "Who pays for all of this",
+        "body": "Amazon, Microsoft, Google, Meta and Oracle are projected to spend about $700–745B combined on capex in 2026, roughly 75% of it AI-infrastructure related. Google's TPU and Amazon's Trainium blur the line between brand and chip designer. OpenAI, Anthropic and xAI drive major demand but are private, so they are not shown as nodes."
+      }
+    },
+    {
+      "tier": 2,
+      "label": "Chip designers",
+      "detail": "create the IP / blueprint for each component"
+    },
+    {
+      "tier": 3,
+      "label": "Foundries",
+      "detail": "the only three that can manufacture sub-7nm chips"
+    },
+    {
+      "tier": 4,
+      "label": "Critical inputs",
+      "detail": "the raw dependencies no designer or brand can work around",
+      "callout": {
+        "title": "Why the funnel narrows here",
+        "body": "Every leading-edge chip, whoever designs or sells it, passes through the same few machines and materials. Only ASML makes EUV lithography machines, and Ajinomoto's ABF film insulates almost every advanced chip package. A brand can switch designers and a designer can switch foundries, but nobody can route around this layer."
+      }
+    },
+    {
+      "tier": 5,
+      "label": "The layer underneath",
+      "detail": "pre-competitive R&D, not a company",
+      "outsideFunnel": true
+    }
+  ],
+  "nodes": [
+    { "id": "apple",            "name": "Apple",              "tier": 1, "ticker": "AAPL",      "exchange": "Nasdaq", "currency": "USD", "price": 314.94, "moat": "diversified",
+      "role": "Designs its own silicon and assembles the device" },
+    { "id": "samsung",          "name": "Samsung",            "tier": 1, "ticker": "005930.KS", "exchange": "KRX",    "currency": "KRW", "price": 260000, "moat": "diversified",
+      "role": "Designs its own silicon and is also a foundry (same company as the Tier 3 entry)" },
+    { "id": "amazon",           "name": "Amazon (AWS)",       "tier": 1, "ticker": "AMZN",      "exchange": "Nasdaq", "currency": "USD", "price": 271.58, "moat": "diversified",
+      "role": "Buys Nvidia GPUs; also designs Trainium (via Marvell)" },
+    { "id": "microsoft",        "name": "Microsoft (Azure)",  "tier": 1, "ticker": "MSFT",      "exchange": "Nasdaq", "currency": "USD", "price": 464.72, "moat": "diversified",
+      "role": "Azure earns over $100B a year; heavy Nvidia and OpenAI buyer" },
+    { "id": "google",           "name": "Google (Cloud)",     "tier": 1, "ticker": "GOOGL",     "exchange": "Nasdaq", "currency": "USD", "price": 362.43, "moat": "diversified",
+      "role": "Buys Nvidia GPUs; also designs TPU (via Broadcom)" },
+    { "id": "meta",             "name": "Meta",               "tier": 1, "ticker": "META",      "exchange": "Nasdaq", "currency": "USD", "price": 588.77, "moat": "diversified",
+      "role": "By some counts the largest single buyer of Nvidia GPUs; also MTIA custom chips" },
+    { "id": "oracle",           "name": "Oracle",             "tier": 1, "ticker": "ORCL",      "exchange": "NYSE",   "currency": "USD", "price": 144,    "priceApprox": true, "moat": "diversified",
+      "role": "OCI plus \"Stargate\": a $300B, 5-year infrastructure deal with OpenAI" },
+    { "id": "coreweave",        "name": "CoreWeave",          "tier": 1, "ticker": "CRWV",      "exchange": "Nasdaq", "currency": "USD", "price": 84.23,  "moat": "neocloud", "badge": "neocloud",
+      "role": "Buys Nvidia GPUs wholesale and rents them to OpenAI, Microsoft and Meta" },
+
+    { "id": "qualcomm",         "name": "Qualcomm",           "tier": 2, "ticker": "QCOM",      "exchange": "Nasdaq", "currency": "USD", "price": 168.47, "moat": "competitive",
+      "role": "Snapdragon mobile SoC design" },
+    { "id": "amd",              "name": "AMD",                "tier": 2, "ticker": "AMD",       "exchange": "Nasdaq", "currency": "USD", "price": 469.10, "moat": "competitive",
+      "role": "Ryzen CPUs and GPUs" },
+    { "id": "nvidia",           "name": "Nvidia",             "tier": 2, "ticker": "NVDA",      "exchange": "Nasdaq", "currency": "USD", "price": 220.01, "moat": "competitive",
+      "role": "GPUs and AI accelerators" },
+    { "id": "intel-design",     "name": "Intel (design arm)", "tier": 2, "ticker": "INTC",      "exchange": "Nasdaq", "currency": "USD", "price": 89.88,  "moat": "competitive",
+      "role": "Core CPU design" },
+    { "id": "micron",           "name": "Micron",             "tier": 2, "ticker": "MU",        "exchange": "Nasdaq", "currency": "USD", "price": 946.30, "moat": "competitive",
+      "role": "Memory (RAM) design" },
+
+    { "id": "tsmc",             "name": "TSMC",               "tier": 3, "ticker": "TSM",       "exchange": "NYSE",   "currency": "USD", "price": 417.52, "moat": "oligopoly",
+      "role": "Leading-edge manufacturer; most designs land here" },
+    { "id": "samsung-foundry",  "name": "Samsung Foundry",    "tier": 3, "ticker": "005930.KS", "exchange": "KRX",    "currency": "KRW", "price": 260000, "moat": "oligopoly",
+      "role": "Manufactures for others and for itself" },
+    { "id": "intel-foundry",    "name": "Intel Foundry",      "tier": 3, "ticker": "INTC",      "exchange": "Nasdaq", "currency": "USD", "price": 89.88,  "moat": "oligopoly",
+      "role": "Newest entrant; developing 18A / RibbonFET" },
+
+    { "id": "asml",             "name": "ASML",               "tier": 4, "ticker": "ASML",      "exchange": "Nasdaq", "currency": "USD", "price": 1696,   "moat": "monopoly",
+      "role": "Sole maker of EUV lithography machines, designed and built in-house" },
+    { "id": "amat",             "name": "Applied Materials",  "tier": 4, "ticker": "AMAT",      "exchange": "Nasdaq", "currency": "USD", "price": 463.15, "moat": "indispensable",
+      "role": "Deposition, etch, ion implantation, polishing; competes with Lam Research and Tokyo Electron" },
+    { "id": "canon",            "name": "Canon",              "tier": 4, "ticker": "7751.T",    "exchange": "TSE",    "currency": "JPY", "price": 4609,   "moat": "competitive", "unproven": true, "badge": "R&D · unproven",
+      "role": "Nanoimprint lithography: stamps patterns instead of projecting them; ~90% less power, unproven for logic" },
+    { "id": "ajinomoto",        "name": "Ajinomoto",          "tier": 4, "ticker": "2802.T",    "exchange": "TSE",    "currency": "JPY", "price": 5196,   "moat": "monopoly",
+      "role": "Makes ABF, the near-100% monopoly insulation film for chip packaging" },
+    { "id": "viavi",            "name": "Viavi Solutions",    "tier": 4, "ticker": "VIAV",      "exchange": "Nasdaq", "currency": "USD", "price": 37,     "priceApprox": true, "moat": "adjacent", "badge": "adjacent",
+      "role": "Tests the interconnects and optics between chips; off the fab chain, a different chokepoint" },
+
+    { "id": "imec",             "name": "imec",               "tier": 5, "ticker": null, "exchange": null, "currency": null, "price": null, "moat": "noninvestable", "badge": "nonprofit",
+      "role": "Belgian research institute in Leuven: neutral pre-competitive R&D shared by ASML, TSMC, Intel, Samsung and Applied Materials. A 30+ year ASML partner, with a joint High-NA EUV pilot line and €2.5B of EU Chips Act funding. Not investable.",
+      "partners": ["asml", "tsmc", "intel-foundry", "samsung-foundry", "amat"] }
+  ]
+}

@@ -1,0 +1,535 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Semiconductor Dependency Map</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: a top-down funnel of tier rows on a dark fab-floor ground; SVG connectors sit
+   behind opaque cards; explanatory callouts flank the funnel and stack below it on phones. */
+:root {
+  color-scheme: dark;
+  --bg: #0d1117;
+  --panel: #131a24;
+  --panel-2: #18212e;
+  --line: #243041;
+  --fg: #e8edf2;
+  --muted: #8fa1b3;
+  --faint: #5b6b7d;
+  --wire: #3a4a5c;
+  --pill-bg: #e8a83c;
+  --pill-fg: #1a1205;
+  --focus: #e8a83c;
+  --warn: #d68a4a;
+
+  --font-display: "Barlow Condensed", "Arial Narrow", "Roboto Condensed", sans-serif;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+
+  --fs-xs: 0.72rem;
+  --fs-sm: 0.82rem;
+  --fs-md: 0.95rem;
+  --fs-lg: 1.15rem;
+  --fs-xl: clamp(1.7rem, 4.5vw, 2.6rem);
+  --radius: 6px;
+  --tier-gap: 72px;
+}
+@media (max-width: 480px) {
+  :root { --fs-xs: 0.66rem; --fs-sm: 0.74rem; --fs-md: 0.86rem; --fs-lg: 1rem; --tier-gap: 56px; }
+}
+
+* { box-sizing: border-box; }
+html, body { background: var(--bg); color: var(--fg); }
+body {
+  margin: 0;
+  padding-inline: 16px;
+  padding-block: 24px 48px;
+  font-family: var(--font-body);
+  font-size: var(--fs-md);
+  line-height: 1.5;
+}
+.wrap { max-width: 1180px; margin-inline: auto; display: grid; gap: 28px; }
+
+/* ── Header ─────────────────────────────────────────────────────────────── */
+header.top { display: flex; flex-wrap: wrap; gap: 16px 24px; align-items: end; justify-content: space-between; }
+.title-block { min-width: 0; display: grid; gap: 6px; }
+.eyebrow {
+  font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--muted);
+  letter-spacing: 0.08em; text-transform: uppercase;
+}
+h1 {
+  margin: 0; font-family: var(--font-display); font-weight: 700; font-size: var(--fs-xl);
+  letter-spacing: 0.01em; line-height: 1.05; text-wrap: balance;
+}
+.lede { margin: 0; color: var(--muted); max-width: 62ch; }
+
+.mode {
+  display: inline-flex; padding: 3px; gap: 3px; border-radius: 999px;
+  background: var(--panel); border: 1px solid var(--line);
+}
+.mode button {
+  appearance: none; border: 0; cursor: pointer; border-radius: 999px;
+  padding: 7px 16px; font: 600 var(--fs-sm) var(--font-body); color: var(--muted); background: transparent;
+}
+.mode button[aria-pressed="true"] { background: var(--fg); color: var(--bg); }
+.mode button:focus-visible, .node:focus-visible, select:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+select {
+  font: 500 var(--fs-sm) var(--font-body); color: var(--fg); background: var(--panel);
+  border: 1px solid var(--line); border-radius: var(--radius); padding: 6px 8px;
+}
+.controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+
+/* ── Disclaimer (one shared component) ─────────────────────────────────── */
+.disclaimer {
+  font-size: var(--fs-xs); color: var(--muted); line-height: 1.45;
+  border-left: 2px solid var(--warn); padding: 6px 10px; background: color-mix(in srgb, var(--warn) 7%, transparent);
+}
+.disclaimer strong { color: var(--fg); font-weight: 600; }
+
+/* ── Main grid: funnel + side callouts ─────────────────────────────────── */
+.main { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 28px; align-items: start; }
+@media (max-width: 960px) { .main { grid-template-columns: minmax(0, 1fr); } }
+.side { display: grid; gap: 16px; min-width: 0; }
+
+/* ── Funnel ────────────────────────────────────────────────────────────── */
+.funnel { position: relative; display: grid; gap: var(--tier-gap); min-width: 0; }
+.wires { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 0; overflow: visible; }
+.wires path { fill: none; stroke-width: 1.2; opacity: 0.38; transition: opacity .15s, stroke-width .15s; }
+.wires.has-focus path { opacity: 0.07; }
+.wires.has-focus path.hot { opacity: 0.95; stroke-width: 2; }
+
+.tier { position: relative; z-index: 1; display: grid; gap: 10px; }
+.tier-head {
+  display: flex; align-items: baseline; gap: 4px 10px; flex-wrap: wrap; justify-content: center; text-align: center;
+  justify-self: center; max-width: 100%; background: var(--bg); padding: 2px 10px; border-radius: var(--radius);
+}
+.tier-num {
+  font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--bg); background: var(--muted);
+  border-radius: 3px; padding: 1px 6px; font-weight: 500;
+}
+.tier-label {
+  font-family: var(--font-display); font-weight: 600; font-size: var(--fs-lg);
+  text-transform: uppercase; letter-spacing: 0.06em;
+}
+.tier-detail { color: var(--muted); font-size: var(--fs-sm); }
+.tier.outside { padding-top: 18px; border-top: 1px dashed var(--line); }
+.tier.outside .tier-label { color: var(--muted); }
+
+.row { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; }
+
+.node {
+  --moat: var(--muted);
+  flex: 0 1 178px; min-width: 0;
+  display: grid; grid-template-rows: auto 1fr auto; gap: 6px;
+  padding: 10px 11px 9px; border-radius: var(--radius);
+  background: var(--panel); border: 1px solid var(--line);
+  box-shadow: inset 3px 0 0 var(--moat);
+  cursor: pointer; text-align: left; color: inherit; font: inherit;
+}
+.node:hover { background: var(--panel-2); }
+.node.selected { border-color: var(--moat); }
+.node.dashed { border-style: dashed; border-color: var(--moat); box-shadow: none; }
+@media (max-width: 480px) { .node { flex-basis: calc(50% - 5px); } }
+
+.node-name { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-weight: 600; font-size: var(--fs-md); line-height: 1.2; }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--moat); flex: none; }
+.node.dashed .dot { background: transparent; border: 1.5px dashed var(--moat); }
+.badge {
+  font: 500 var(--fs-xs) var(--font-mono); color: var(--moat); border: 1px solid currentColor;
+  border-radius: 3px; padding: 0 4px; line-height: 1.4; white-space: nowrap;
+}
+.role { font-size: var(--fs-sm); color: var(--muted); line-height: 1.4; }
+.foot {
+  display: flex; align-items: center; justify-content: space-between; gap: 6px; flex-wrap: wrap;
+  font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--muted);
+  font-variant-numeric: tabular-nums; border-top: 1px solid var(--line); padding-top: 6px;
+}
+.foot .tick { color: var(--fg); font-weight: 500; }
+.pill {
+  background: var(--pill-bg); color: var(--pill-fg); border-radius: 999px;
+  padding: 0 7px; font-weight: 500; line-height: 1.55;
+}
+.etf-chip { color: var(--pill-bg); border-bottom: 1px dotted currentColor; cursor: help; }
+
+/* ── Callouts ──────────────────────────────────────────────────────────── */
+.callout {
+  --tone: var(--muted);
+  background: var(--panel); border: 1px solid color-mix(in srgb, var(--tone) 55%, var(--line));
+  border-radius: var(--radius); padding: 14px 15px; display: grid; gap: 8px; min-width: 0;
+}
+.callout h2, .callout h3 {
+  margin: 0; font-family: var(--font-display); font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.05em; font-size: var(--fs-lg); color: var(--tone); line-height: 1.15;
+}
+.callout p { margin: 0; font-size: var(--fs-sm); }
+.callout ul { margin: 0; padding-left: 18px; font-size: var(--fs-sm); display: grid; gap: 4px; }
+
+.legend { list-style: none; padding: 0 !important; display: grid; gap: 7px !important; }
+.legend li { display: grid; grid-template-columns: 14px minmax(0, 1fr); gap: 8px; align-items: start; }
+.legend .dot { margin-top: 5px; }
+.legend .dot.dashed { background: transparent; border: 1.5px dashed var(--moat); }
+.legend b { font-weight: 600; }
+.legend span { color: var(--muted); }
+.wire-key { display: grid; gap: 6px; font-size: var(--fs-sm); color: var(--muted); }
+.wire-key div { display: flex; align-items: center; gap: 8px; }
+.wire-key svg { flex: none; }
+
+.alloc { display: grid; gap: 4px; font-family: var(--font-mono); font-size: var(--fs-sm); font-variant-numeric: tabular-nums; }
+.alloc div { display: flex; justify-content: space-between; gap: 10px; }
+.alloc .total { border-top: 1px solid var(--line); padding-top: 4px; color: var(--fg); font-weight: 500; }
+.alloc .bad { color: var(--warn); }
+.bar { display: flex; height: 10px; border-radius: 3px; overflow: hidden; background: var(--line); }
+.bar span { display: block; height: 100%; }
+.small { font-size: var(--fs-xs); color: var(--muted); }
+.mono { font-family: var(--font-mono); }
+
+.detail-card { --tone: var(--muted); }
+.detail-card .meta { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--muted); display: flex; flex-wrap: wrap; gap: 4px 12px; }
+
+.error { color: var(--warn); }
+.error code { font-family: var(--font-mono); color: var(--fg); }
+
+[data-mode="explainer"] .portfolio-only { display: none !important; }
+
+@media (prefers-reduced-motion: reduce) { .wires path { transition: none; } }
+</style>
+</head>
+<body>
+<div class="wrap" id="app" data-mode="explainer">
+  <header class="top">
+    <div class="title-block">
+      <div class="eyebrow">Brand → designer → foundry → critical inputs</div>
+      <h1>Semiconductor Dependency Map</h1>
+      <p class="lede">Who depends on whom in the chip industry, from the companies that sell devices and compute down to the few that make leading-edge manufacturing physically possible. Position shows the tier; colour shows how defensible each company's role is.</p>
+    </div>
+    <div class="controls">
+      <div class="mode" role="group" aria-label="View">
+        <button type="button" id="mode-explainer" data-mode="explainer" aria-pressed="true">Explainer</button>
+        <button type="button" id="mode-portfolio" data-mode="portfolio" aria-pressed="false">Portfolio</button>
+      </div>
+      <label class="portfolio-only small" for="portfolio-select" id="portfolio-select-wrap" hidden>Portfolio
+        <select id="portfolio-select"></select>
+      </label>
+    </div>
+  </header>
+
+  <div data-disclaimer></div>
+
+  <div class="main">
+    <section class="funnel" id="funnel" aria-label="Dependency funnel">
+      <svg class="wires" id="wires" aria-hidden="true"></svg>
+    </section>
+    <aside class="side" id="side"></aside>
+  </div>
+</div>
+
+<script>
+(() => {
+  "use strict";
+
+  const app    = document.getElementById("app");
+  const funnel = document.getElementById("funnel");
+  const wires  = document.getElementById("wires");
+  const side   = document.getElementById("side");
+
+  let DATA = null, PORTS = null;
+  let mode = "explainer";
+  let portfolioId = null;
+  let selected = null;
+
+  const storage = {
+    get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+    set(k, v) { try { localStorage.setItem(k, v); } catch { /* storage unavailable */ } },
+  };
+
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+  // ── Shared disclaimer component ─────────────────────────────────────────
+  function disclaimerHTML() {
+    const m = DATA.meta;
+    const asOf = m.pricesAsOf ? `Prices as of <strong>${esc(m.pricesAsOf)}</strong> (${esc(m.pricesSource)}). ` : "";
+    return `<div class="disclaimer" role="note">${asOf}${esc(m.disclaimer)}</div>`;
+  }
+
+  function formatPrice(n) {
+    if (n.price == null) return "";
+    const digits = (n.currency === "KRW" || n.currency === "JPY" || n.price >= 1000) ? 0 : 2;
+    let s;
+    try {
+      s = new Intl.NumberFormat("en-US", { style: "currency", currency: n.currency, minimumFractionDigits: digits, maximumFractionDigits: digits }).format(n.price);
+    } catch {
+      s = `${n.price} ${n.currency}`;
+    }
+    return (n.priceApprox ? "~" : "") + s;
+  }
+
+  const portfolio = () => (PORTS && portfolioId) ? PORTS.portfolios[portfolioId] : null;
+  const weightOf  = (id) => { const p = portfolio(); return p && p.weights[id] != null ? p.weights[id] : null; };
+  const inCore    = (id) => { const p = portfolio(); return !!(p && p.core && p.core.holds.includes(id)); };
+
+  // ── Render ──────────────────────────────────────────────────────────────
+  function render() {
+    app.dataset.mode = mode;
+    document.querySelectorAll(".mode button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.mode === mode)));
+    document.querySelectorAll("[data-disclaimer]").forEach((el) => { el.innerHTML = disclaimerHTML(); });
+    renderFunnel();
+    renderSide();
+    requestAnimationFrame(drawWires);
+  }
+
+  function nodeHTML(n) {
+    const moat = DATA.moats[n.moat];
+    const dashed = moat.dashed || n.unproven;
+    const w = mode === "portfolio" ? weightOf(n.id) : null;
+    const etf = mode === "portfolio" && inCore(n.id);
+    const p = portfolio();
+    const priceStr = formatPrice(n);
+    return `
+      <button type="button" class="node${dashed ? " dashed" : ""}${selected === n.id ? " selected" : ""}"
+              id="node-${esc(n.id)}" data-id="${esc(n.id)}" style="--moat:${moat.color}"
+              aria-pressed="${selected === n.id}" aria-label="${esc(n.name)}, ${esc(moat.label)}">
+        <span class="node-name"><span class="dot"></span>${esc(n.name)}${n.badge ? `<span class="badge">${esc(n.badge)}</span>` : ""}</span>
+        <span class="role">${esc(n.role)}</span>
+        ${n.ticker ? `<span class="foot">
+          <span><span class="tick">${esc(n.ticker)}</span>${priceStr ? ` · ${esc(priceStr)}` : ""}</span>
+          ${etf ? `<span class="etf-chip" title="${esc(p.overlapNote)}">+ETF</span>` : ""}
+          ${w != null ? `<span class="pill">${w}%</span>` : ""}
+        </span>` : `<span class="foot"><span>not listed</span></span>`}
+      </button>`;
+  }
+
+  function renderFunnel() {
+    funnel.querySelectorAll(".tier").forEach((el) => el.remove());
+    for (const t of DATA.tiers) {
+      const nodes = DATA.nodes.filter((n) => n.tier === t.tier);
+      const el = document.createElement("div");
+      el.className = "tier" + (t.outsideFunnel ? " outside" : "");
+      el.dataset.tier = t.tier;
+      el.innerHTML = `
+        <div class="tier-head">
+          <span class="tier-num">${t.outsideFunnel ? "Under" : "Tier " + t.tier}</span>
+          <span class="tier-label">${esc(t.label)}</span>
+          <span class="tier-detail">${esc(t.detail)}</span>
+        </div>
+        <div class="row">${nodes.map(nodeHTML).join("")}</div>`;
+      funnel.appendChild(el);
+    }
+  }
+
+  function wireKeyHTML() {
+    const sample = (stroke, dash) => `<svg width="34" height="8" viewBox="0 0 34 8"><path d="M1 4 H33" stroke="${stroke}" stroke-width="2" fill="none" ${dash ? 'stroke-dasharray="4 3"' : ""}/></svg>`;
+    return `<div class="wire-key">
+      <div>${sample(DATA.moats.monopoly.color)} Hard monopoly dependency</div>
+      <div>${sample(DATA.moats.indispensable.color)} Competitive but essential</div>
+      <div>${sample(DATA.moats.competitive.color, true)} Speculative or unproven</div>
+      <div>${sample(DATA.moats.adjacent.color, true)} Adjacent, off the fab chain</div>
+      <div>${sample(DATA.moats.noninvestable.color, true)} Shared R&amp;D (imec)</div>
+    </div>`;
+  }
+
+  function detailHTML() {
+    if (!selected) {
+      return `<section class="callout detail-card"><h3>Why this company is here</h3>
+        <p>Select any company to highlight what it depends on and what depends on it.</p></section>`;
+    }
+    const n = DATA.nodes.find((x) => x.id === selected);
+    const moat = DATA.moats[n.moat];
+    const tier = DATA.tiers.find((t) => t.tier === n.tier);
+    const w = mode === "portfolio" ? weightOf(n.id) : null;
+    const p = portfolio();
+    const twins = DATA.nodes.filter((x) => x.id !== n.id && x.ticker && x.ticker === n.ticker);
+    return `<section class="callout detail-card" style="--tone:${moat.color}">
+      <h3>${esc(n.name)}</h3>
+      <div class="meta">
+        <span>${tier.outsideFunnel ? "Outside the funnel" : "Tier " + n.tier}</span>
+        ${n.ticker ? `<span>${esc(n.ticker)} · ${esc(n.exchange)} · ${esc(n.currency)}</span>` : ""}
+        ${n.price != null ? `<span>${esc(formatPrice(n))}</span>` : ""}
+      </div>
+      <p>${esc(n.role)}</p>
+      <p><b>${esc(moat.label)}</b>: ${esc(moat.detail)}${n.unproven ? ". This technology is unproven for logic chips." : "."}</p>
+      ${twins.length ? `<p class="small">Same listed company as ${twins.map((t) => esc(t.name) + " (Tier " + t.tier + ")").join(", ")}.</p>` : ""}
+      ${w != null ? `<p class="portfolio-only">Satellite weight: <span class="pill mono">${w}%</span></p>` : ""}
+      ${mode === "portfolio" && inCore(n.id) ? `<p class="portfolio-only small">${esc(p.overlapNote)}</p>` : ""}
+    </section>`;
+  }
+
+  function portfolioHTML() {
+    const p = portfolio();
+    if (!p) return "";
+    const nodesById = Object.fromEntries(DATA.nodes.map((n) => [n.id, n]));
+    const sats = Object.entries(p.weights).map(([id, w]) => ({ n: nodesById[id], w }));
+    const satTotal = sats.reduce((s, x) => s + x.w, 0);
+    const total = satTotal + p.core.weight;
+    const ok = Math.abs(total - 100) < 1e-9;
+    const unknown = sats.filter((x) => !x.n);
+    const overlap = p.core.holds.filter((id) => p.weights[id] != null).map((id) => nodesById[id].name);
+    const coreHolds = p.core.holds.map((id) => nodesById[id] ? nodesById[id].name : id).concat(p.core.holdsOther || []);
+
+    const barParts = [`<span style="width:${p.core.weight}%;background:var(--muted)" title="Core ETF ${p.core.weight}%"></span>`]
+      .concat(sats.filter((x) => x.n).map((x) => `<span style="width:${x.w}%;background:${DATA.moats[x.n.moat].color}" title="${esc(x.n.name)} ${x.w}%"></span>`));
+
+    return `
+      <section class="callout portfolio-only" style="--tone:var(--pill-bg)">
+        <h3>Portfolio total</h3>
+        <p class="small">${esc(p.name)} · ${esc(p.investor)}</p>
+        <div class="bar" aria-hidden="true">${barParts.join("")}</div>
+        <div class="alloc">
+          <div><span>Core ETF ${esc(p.core.ticker)}</span><span>${p.core.weight}%</span></div>
+          ${sats.filter((x) => x.n).map((x) => `<div><span>${esc(x.n.name)} <span class="small">${esc(x.n.ticker)}</span></span><span>${x.w}%</span></div>`).join("")}
+          <div class="total"><span>Satellites</span><span>${satTotal}%</span></div>
+          <div class="total${ok ? "" : " bad"}"><span>Total</span><span>${total}%${ok ? "" : " (should be 100%)"}</span></div>
+        </div>
+        ${unknown.length ? `<p class="error">Some weights point to companies that aren't in nodes.json.</p>` : ""}
+        <div data-disclaimer></div>
+      </section>
+
+      <section class="callout portfolio-only" style="--tone:var(--muted)">
+        <h3>Core holding (${p.core.weight}%)</h3>
+        <p><b>${esc(p.core.name)}</b></p>
+        <p class="mono small">ISIN ${esc(p.core.isin)} · ${esc(p.core.exchange)} ${esc(p.core.ticker)} · ${esc(p.core.currency)}</p>
+        <p>Not drawn as a node. It already holds ${esc(coreHolds.join(", "))}.</p>
+        ${overlap.length ? `<p><span class="etf-chip">+ETF</span> ${esc(overlap.join(", "))}: ${esc(p.overlapNote)}</p>` : ""}
+      </section>
+
+      <section class="callout portfolio-only" style="--tone:var(--warn)">
+        <h3>Evaluated and excluded</h3>
+        <ul>${p.excluded.map((x) => `<li><b class="mono">${esc(x.ticker)}</b> ${esc(x.name)} <span class="mono small">(${esc(x.isin)})</span>. ${esc(x.reason)}</li>`).join("")}</ul>
+      </section>
+
+      ${p.taxNotes && p.taxNotes.length ? `<section class="callout portfolio-only" style="--tone:var(--muted)">
+        <h3>German tax context</h3>
+        <p class="small">Background only. Nothing here is calculated for you.</p>
+        <ul>${p.taxNotes.map((t) => `<li>${esc(t)}</li>`).join("")}</ul>
+      </section>` : ""}`;
+  }
+
+  function renderSide() {
+    const legend = Object.values(DATA.moats).map((m) =>
+      `<li style="--moat:${m.color}"><span class="dot${m.dashed ? " dashed" : ""}"></span><div><b>${esc(m.label)}</b> <span>${esc(m.detail)}</span></div></li>`).join("");
+    side.innerHTML = `
+      ${detailHTML()}
+      ${mode === "portfolio" ? portfolioHTML() : ""}
+      ${DATA.tiers.filter((t) => t.callout).map((t) => `<section class="callout">
+        <h3>${esc(t.callout.title)}</h3>
+        <p class="small mono">Tier ${t.tier} · ${esc(t.label)}</p>
+        <p>${esc(t.callout.body)}</p>
+      </section>`).join("")}
+      <section class="callout">
+        <h3>How to read the colours</h3>
+        <p>A company's row is its place in the chain. Its colour is how hard it would be to replace, whatever row it's in.</p>
+        <ul class="legend">${legend}</ul>
+        <p class="small">A dashed card is unproven or not investable.</p>
+      </section>
+      <section class="callout">
+        <h3>How to read the lines</h3>
+        <p>Every company needs the tier below it. Lines take the style of the company they lead into.</p>
+        ${wireKeyHTML()}
+      </section>`;
+    side.querySelectorAll("[data-disclaimer]").forEach((el) => { el.innerHTML = disclaimerHTML(); });
+  }
+
+  // ── Connectors ──────────────────────────────────────────────────────────
+  function wireStyle(target) {
+    const m = DATA.moats;
+    if (target.tier === 5 || target.moat === "noninvestable") return { stroke: m.noninvestable.color, dash: "4 4" };
+    if (target.unproven)                return { stroke: m.competitive.color, dash: "5 4" };
+    if (target.moat === "monopoly")     return { stroke: m.monopoly.color, dash: null };
+    if (target.moat === "indispensable") return { stroke: m.indispensable.color, dash: null };
+    if (target.moat === "adjacent")     return { stroke: m.adjacent.color, dash: "2 4" };
+    return { stroke: "var(--wire)", dash: null };
+  }
+
+  function drawWires() {
+    if (!DATA) return;
+    const box = funnel.getBoundingClientRect();
+    wires.setAttribute("viewBox", `0 0 ${box.width} ${box.height}`);
+    const pos = {};
+    for (const n of DATA.nodes) {
+      const el = document.getElementById("node-" + n.id);
+      if (!el) continue;
+      const r = el.getBoundingClientRect();
+      pos[n.id] = { x: r.left - box.left + r.width / 2, top: r.top - box.top, bottom: r.bottom - box.top };
+    }
+    const paths = [];
+    const add = (from, to, style, a, b) => {
+      const p = pos[from.id], q = pos[to.id];
+      if (!p || !q) return;
+      const y1 = a === "bottom" ? p.bottom : p.top;
+      const y2 = b === "top" ? q.top : q.bottom;
+      const dy = (y2 - y1) * 0.5;
+      const d = `M${p.x.toFixed(1)},${y1.toFixed(1)} C${p.x.toFixed(1)},${(y1 + dy).toFixed(1)} ${q.x.toFixed(1)},${(y2 - dy).toFixed(1)} ${q.x.toFixed(1)},${y2.toFixed(1)}`;
+      paths.push(`<path d="${d}" stroke="${style.stroke}"${style.dash ? ` stroke-dasharray="${style.dash}"` : ""} data-a="${from.id}" data-b="${to.id}"/>`);
+    };
+    const byTier = (t) => DATA.nodes.filter((n) => n.tier === t);
+    for (let t = 1; t <= 3; t++) {
+      for (const a of byTier(t)) for (const b of byTier(t + 1)) add(a, b, wireStyle(b), "bottom", "top");
+    }
+    // imec sits underneath: dashed lines up to the partners it shares R&D with
+    for (const r of byTier(5)) for (const id of (r.partners || [])) {
+      const partner = DATA.nodes.find((n) => n.id === id);
+      if (partner) add(r, partner, wireStyle(r), "top", "bottom");
+    }
+    wires.innerHTML = paths.join("");
+    applyFocus();
+  }
+
+  function applyFocus() {
+    wires.classList.toggle("has-focus", !!selected);
+    wires.querySelectorAll("path").forEach((p) => p.classList.toggle("hot", !!selected && (p.dataset.a === selected || p.dataset.b === selected)));
+  }
+
+  // ── Events ──────────────────────────────────────────────────────────────
+  funnel.addEventListener("click", (e) => {
+    const card = e.target.closest(".node");
+    if (!card) return;
+    selected = selected === card.dataset.id ? null : card.dataset.id;
+    funnel.querySelectorAll(".node").forEach((n) => {
+      const on = n.dataset.id === selected;
+      n.classList.toggle("selected", on);
+      n.setAttribute("aria-pressed", String(on));
+    });
+    renderSide();
+    applyFocus();
+  });
+
+  document.querySelectorAll(".mode button").forEach((b) => b.addEventListener("click", () => setMode(b.dataset.mode)));
+
+  function setMode(m) {
+    mode = m === "portfolio" ? "portfolio" : "explainer";
+    storage.set("semimap.mode", mode);
+    document.getElementById("portfolio-select-wrap").hidden = !(mode === "portfolio" && PORTS && Object.keys(PORTS.portfolios).length > 1);
+    render();
+  }
+
+  const sel = document.getElementById("portfolio-select");
+  sel.addEventListener("change", () => { portfolioId = sel.value; storage.set("semimap.portfolio", portfolioId); render(); });
+
+  if ("ResizeObserver" in window) new ResizeObserver(() => drawWires()).observe(funnel);
+  window.addEventListener("resize", drawWires);
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(drawWires);
+
+  // ── Load data ───────────────────────────────────────────────────────────
+  Promise.all([fetch("nodes.json"), fetch("portfolios.json")])
+    .then((rs) => Promise.all(rs.map((r) => { if (!r.ok) throw new Error(r.url + " " + r.status); return r.json(); })))
+    .then(([nodes, ports]) => {
+      DATA = nodes;
+      PORTS = ports;
+      const ids = Object.keys(PORTS.portfolios);
+      const savedPort = storage.get("semimap.portfolio");
+      portfolioId = ids.includes(savedPort) ? savedPort : (PORTS.default || ids[0]);
+      sel.innerHTML = ids.map((id) => `<option value="${esc(id)}"${id === portfolioId ? " selected" : ""}>${esc(PORTS.portfolios[id].name)}</option>`).join("");
+      const hash = location.hash.replace("#", "");
+      setMode(hash === "portfolio" || hash === "explainer" ? hash : (storage.get("semimap.mode") || "explainer"));
+    })
+    .catch((err) => {
+      funnel.innerHTML = `<div class="callout"><h3>Couldn't load the map data</h3>
+        <p class="error">${esc(err.message)}</p>
+        <p>The page reads <code>nodes.json</code> and <code>portfolios.json</code> from its own folder, which browsers block when the file is opened directly. Serve the folder instead: <code>python -m http.server 8000 -d semimap</code>, then open <code>http://localhost:8000</code>.</p></div>`;
+    });
+})();
+</script>
+</body>
+</html>
