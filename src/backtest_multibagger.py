@@ -173,22 +173,29 @@ def run_mb_backtest(
     require_acceleration: bool = True,
     # ── V2 enhancement flags ───────────────────────────────────────────────
     use_conviction_sizing: bool = True,   # STRONG ideas get 1.5× allocation
-    partial_profit_at: float    = 0.40,   # trim at +40% unrealised (0 = off)
-    partial_profit_trim: float  = 0.33,   # fraction to sell at partial event
+    partial_profit_at: float    = 1.00,   # trim at +100% (doubled) unrealised (0 = off)
+    partial_profit_trim: float  = 0.50,   # sell half at partial event; rest compounds
     trailing_stop: float        = 0.20,   # exit if 20% below peak (0 = off)
+    stop_loss: float            = 0.10,   # hard stop: exit full pos if 10% below entry
     regime_scaling: bool        = True,   # no new entries when market < SMA200
     recovery_fast_review: int   = 21,     # review interval during crash recovery
 ) -> dict:
     """
-    Conviction-hold multi-bagger backtest (V2 — enhanced returns).
+    Conviction-hold multi-bagger backtest (V3 — refined exits).
+
+    V3 changes vs V2
+    ----------------
+    1. Hard stop loss (10%)    Exit full position if price drops 10% below entry cost.
+    2. Partial at doubling     Sell 50% when position is up 100% (stock doubled).
+                               Freed cash is redeployed in next review into best candidates.
+                               (was: trim 33% at +40%)
 
     V2 changes vs V1
     ----------------
-    1. Conviction sizing      STRONG (top 20% mom + accel > 0.05) → 1.5× alloc.
-    2. Crash recovery speed   Review interval → 21d when market recovers from >20% DD.
-    3. Partial profit-taking  Trim 33% at +40% unrealised; rest keeps running.
-    4. Trailing stop (20%)    Exit if price falls >20% from post-entry peak.
-    5. Regime cap             No new entries while proxy index < SMA200.
+    3. Conviction sizing       STRONG (top 20% mom + accel > 0.05) → 1.5× alloc.
+    4. Crash recovery speed    Review interval → 21d when market recovers from >20% DD.
+    5. Trailing stop (20%)     Exit if price falls >20% from post-entry peak (after +15% gain).
+    6. Regime cap              No new entries while proxy index < SMA200.
     """
     start_ts = pd.Timestamp(start)
     end_ts   = pd.Timestamp(end)
@@ -279,7 +286,29 @@ def run_mb_backtest(
                         "reason": "trailing_stop",
                     })
 
-        # ── Exit 2: structural breakdown ──────────────────────────────────────
+        # ── Exit 2: hard stop loss (10% below entry) ─────────────────────────
+        if stop_loss > 0:
+            for t in list(portfolio.keys()):
+                ep = entry_price.get(t, 0)
+                px = float(prices.get(t, 0))
+                if ep > 0 and px > 0 and px < ep * (1 - stop_loss):
+                    shares = portfolio.pop(t)
+                    ed     = entry_date.pop(t, date)
+                    entry_price.pop(t, None)
+                    peak_price.pop(t, None)
+                    partial_taken.pop(t, None)
+                    entry_conv.pop(t, None)
+                    fill   = px * (1 - slippage)
+                    cash  += shares * fill * (1 - commission)
+                    pnl    = (fill * (1 - commission) - ep) * shares
+                    trades.append({
+                        "date": date, "action": "SELL", "ticker": t,
+                        "shares": shares, "price": px, "entry_price": ep,
+                        "pnl": pnl, "hold_days": (date - ed).days,
+                        "reason": "stop_loss",
+                    })
+
+        # ── Exit 3: structural breakdown ──────────────────────────────────────
         bd_row = breakdown_m.loc[date]
         for t in list(portfolio.keys()):
             if bd_row.get(t, False):
@@ -509,6 +538,7 @@ def run_mb_backtest(
         "n_sells":              len(sell_trades),
         "n_breakdown":          sum(1 for t in sell_trades if t.get("reason") == "breakdown"),
         "n_trailing_stop":      sum(1 for t in sell_trades if t.get("reason") == "trailing_stop"),
+        "n_stop_loss":          sum(1 for t in sell_trades if t.get("reason") == "stop_loss"),
         "n_partial_profit":     sum(1 for t in sell_trades if t.get("reason") == "partial_profit"),
         "n_strong_entries":     sum(1 for t in buy_trades if t.get("conviction") == "STRONG"),
         "n_moderate_entries":   sum(1 for t in buy_trades if t.get("conviction") == "MODERATE"),
@@ -614,6 +644,7 @@ def mb_backtest_report(r: dict) -> str:
         "",
         f"  {'Trades (buy / sell)':<26}  \033[97m{r['n_buys']:>6} / {r['n_sells']:<6}\033[0m",
         f"  {'  ↳ SMA breakdown exits':<26}  \033[91m{r['n_breakdown']:>14}\033[0m",
+        f"  {'  ↳ Hard stop-loss exits':<26}  \033[91m{r.get('n_stop_loss',0):>14}\033[0m",
         f"  {'  ↳ Trailing stop exits':<26}  \033[93m{r.get('n_trailing_stop',0):>14}\033[0m",
         f"  {'  ↳ Partial profit trims':<26}  \033[92m{r.get('n_partial_profit',0):>14}\033[0m",
         f"  {'  ↳ STRONG / MODERATE buys':<26}  \033[97m{r.get('n_strong_entries',0):>5} / {r.get('n_moderate_entries',0):<8}\033[0m",
