@@ -40,6 +40,7 @@ python src/run_walkforward.py --market IN --years 5
 python src/run_montecarlo.py --trades reports/some-trades.csv
 python src/run_stresstests.py --market IN
 python src/run_replacement_list.py --market IN
+python src/run_backtest_semimap.py --mode all   # Semiconductor Map stocks, in EUR (CLI only)
 ```
 
 Three pre-existing test failures are unrelated to any recent work and not a regression signal by themselves: `test_backtest.py::TestPositionSizeCap::{test_no_single_trade_costs_more_than_20pct,test_size_capped_decision_engine}` and `test_gates.py::TestGate4Liquidity::test_mult_tightens`.

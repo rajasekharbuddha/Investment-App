@@ -85,6 +85,8 @@ def run_longterm_backtest(
     momentum_floor: float   = -0.05,   # exit-watch proxy: exit if score < this
     commission: float       = 0.001,
     slippage: float         = 0.001,
+    benchmark_series: "pd.Series | None" = None,
+    benchmark_label: "str | None"        = None,
 ) -> dict:
     """
     Momentum-rebalancing long-term backtest with exit-watch signals.
@@ -104,6 +106,10 @@ def run_longterm_backtest(
                           unavailable.  Default -0.05 = exit if avg return
                           across [14,30,63] day periods is below -5%.
                           Set to -9 to disable.
+    benchmark_series    : optional pre-built benchmark close series (e.g. a
+                          currency-converted index). When given, it is used
+                          instead of downloading BENCHMARK_TICKER[market].
+    benchmark_label     : display name for benchmark_series
 
     Sell logic (three independent triggers)
     ----------------------------------------
@@ -296,13 +302,17 @@ def run_longterm_backtest(
 
     # ── Benchmark ─────────────────────────────────────────────────────────────
     bench_info  = {}
-    bench_label = BENCHMARK_TICKER.get(market, "^NSEI")
+    bench_label = benchmark_label or BENCHMARK_TICKER.get(market, "^NSEI")
     try:
-        import yfinance as yf
-        bdf = yf.download(bench_label, start=start, end=end,
-                          progress=False, auto_adjust=True)
-        if not bdf.empty:
-            bc     = bdf["Close"].squeeze().dropna()
+        if benchmark_series is not None:
+            bc = benchmark_series.dropna()
+            bc = bc[(bc.index >= start_ts) & (bc.index <= end_ts)]
+        else:
+            import yfinance as yf
+            bdf = yf.download(bench_label, start=start, end=end,
+                              progress=False, auto_adjust=True)
+            bc  = bdf["Close"].squeeze().dropna() if not bdf.empty else pd.Series(dtype=float)
+        if len(bc) > 1:
             b0, b1 = float(bc.iloc[0]), float(bc.iloc[-1])
             b_tot  = (b1 / b0) - 1
             b_cagr = (b1 / b0) ** (1 / n_yrs) - 1
@@ -370,6 +380,7 @@ def run_longterm_backtest(
         "rebalance_days":    rebalance_days,
         "exit_on_breakdown": exit_on_breakdown,
         "final_holdings":    final_holdings,
+        "benchmark_name":    benchmark_label if benchmark_series is not None else None,
     }
 
 
@@ -438,7 +449,7 @@ def longterm_backtest_report(r: dict) -> str:
         filled = min(w, max(0, round(abs(v) / max_v * w)))
         return "#" * filled + "." * (w - filled)
 
-    bench_name = {"IN": "Nifty", "US": "S&P 500", "EU": "STOXX"}.get(r["market"], "Benchmark")
+    bench_name = r.get("benchmark_name") or {"IN": "Nifty", "US": "S&P 500", "EU": "STOXX"}.get(r["market"], "Benchmark")
 
     hold_str  = (f"{r['avg_hold_days']:.0f} days"
                  if r.get("avg_hold_days") else "N/A")

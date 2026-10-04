@@ -808,6 +808,8 @@ Plain-English explanations of the technical, fundamental, and strategy terms use
 
 `semimap/` is a standalone interactive map of the chip supply chain (brand → designer → foundry → critical inputs) with a model-portfolio overlay. It's separate from the strategy engine. See [`semimap/README.md`](semimap/README.md).
 
+`python src/run_backtest_semimap.py` backtests the map's stocks in EUR: the model portfolio against its core ETF, plus the short-term and long-term strategies with the map's stocks as their universe.
+
 ---
 
 ## Running Tests
