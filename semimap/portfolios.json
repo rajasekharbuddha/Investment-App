@@ -1,0 +1,51 @@
+{
+  "default": "model",
+  "portfolios": {
+    "model": {
+      "name": "Model portfolio",
+      "investor": "Germany-based, EUR broker",
+      "core": {
+        "weight": 50,
+        "name": "VanEck Semiconductor UCITS ETF",
+        "isin": "IE00BMC38736",
+        "ticker": "VVSM",
+        "exchange": "Xetra",
+        "currency": "EUR",
+        "holds": ["nvidia", "tsmc", "asml", "amd"],
+        "holdsOther": ["Broadcom"]
+      },
+      "weights": {
+        "samsung":   5,
+        "microsoft": 5,
+        "coreweave": 2,
+        "nvidia":    7,
+        "tsmc":      8,
+        "asml":      10,
+        "amat":      5,
+        "canon":     1,
+        "ajinomoto": 5,
+        "viavi":     2
+      },
+      "overlapNote": "Also held inside the core ETF. The extra satellite position is an intentional conviction tilt, not double-counting.",
+      "excluded": [
+        {
+          "ticker": "SOXX",
+          "name": "iShares Semiconductor ETF",
+          "isin": "US4642875235",
+          "reason": "US-domiciled and not UCITS. EU retail brokers generally can't sell it without a PRIIPs KID."
+        },
+        {
+          "ticker": "SMGB",
+          "name": "VanEck Semiconductor UCITS ETF (London, GBP)",
+          "isin": "IE00BMC38736",
+          "reason": "Same fund as the core ETF, just the GBP listing. The Xetra EUR listing (VVSM) avoids needless GBP exposure."
+        }
+      ],
+      "taxNotes": [
+        "Abgeltungsteuer plus Solidaritätszuschlag: 26.375% on gains and dividends (before church tax)",
+        "Sparerpauschbetrag: the annual tax-free allowance for investment income",
+        "Vorabpauschale: an annual advance tax on accumulating funds such as the core ETF"
+      ]
+    }
+  }
+}

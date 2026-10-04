@@ -804,6 +804,12 @@ Plain-English explanations of the technical, fundamental, and strategy terms use
 
 ---
 
+## Semiconductor Dependency Map
+
+`semimap/` is a standalone interactive map of the chip supply chain (brand → designer → foundry → critical inputs) with a model-portfolio overlay. It's separate from the strategy engine. See [`semimap/README.md`](semimap/README.md).
+
+---
+
 ## Running Tests
 
 ```bash
