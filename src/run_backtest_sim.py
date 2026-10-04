@@ -20,11 +20,9 @@ import argparse
 import sys
 from pathlib import Path
 
-import pandas as pd
-
 sys.path.insert(0, str(Path(__file__).parent))
 
-from synthetic_market_data import generate_market_data, _MARKET_ANNUAL
+from synthetic_market_data import generate_market_data
 from backtest_multibagger    import run_mb_backtest, mb_backtest_report
 from run_backtest_multibagger import _UNIVERSE
 
@@ -69,12 +67,6 @@ def main() -> None:
     print(f"  Generated {len(data_map)} stock series + benchmark")
     print(f"  Running backtest from {start_str}...")
 
-    # Inject benchmark into data_map for the backtest engine (uses as buy-hold comparison)
-    bench_df = pd.DataFrame({"Close": benchmark})
-    bench_df["SMA_50"]  = bench_df["Close"].rolling(50).mean()
-    bench_df["SMA_200"] = bench_df["Close"].rolling(200).mean()
-
-    # Run backtest
     result = run_mb_backtest(
         market               = market,
         data_map             = data_map,
@@ -86,31 +78,10 @@ def main() -> None:
         min_entry_rank       = args.min_rank,
         require_acceleration = not args.no_accel,
         stop_loss            = args.stop_loss,
+        benchmark            = benchmark,
     )
-
-    # Inject synthetic benchmark into result for comparison section of report
-    if "error" not in result:
-        ann_rets = _MARKET_ANNUAL.get(market, {})
-        bench_series = benchmark.loc[start_str:args.end].dropna()
-        if len(bench_series) > 1:
-            n_yrs = max((bench_series.index[-1] - bench_series.index[0]).days / 365.25, 0.01)
-            b_tot  = float(bench_series.iloc[-1] / bench_series.iloc[0]) - 1
-            b_cagr = (1 + b_tot) ** (1 / n_yrs) - 1
-            from backtest_multibagger import _max_dd, _sharpe
-            b_dd  = _max_dd(bench_series)
-            b_sh  = _sharpe(bench_series.pct_change().dropna())
-            b_ann: dict[int, float] = {}
-            for yr, grp in bench_series.groupby(bench_series.index.year):
-                b_ann[int(yr)] = float(grp.iloc[-1] / grp.iloc[0] - 1)
-            result["benchmark"] = {
-                "ticker":         {"IN": "^NSEI (synthetic)", "US": "^GSPC (synthetic)",
-                                   "EU": "^STOXX50E (synthetic)"}.get(market, "Benchmark"),
-                "cagr":           b_cagr,
-                "total_return":   b_tot,
-                "max_dd":         b_dd,
-                "sharpe":         b_sh,
-                "annual_returns": b_ann,
-            }
+    if "benchmark" in result and "ticker" in result["benchmark"]:
+        result["benchmark"]["ticker"] += " (synthetic)"
 
     print(mb_backtest_report(result))
 

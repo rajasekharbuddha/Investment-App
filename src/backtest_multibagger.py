@@ -178,6 +178,7 @@ def run_mb_backtest(
     stop_loss: float            = 0.00,   # hard stop disabled; 0 < x < 1 enables
     regime_scaling: bool        = True,   # no new entries when market < SMA200
     recovery_fast_review: int   = 21,     # review interval during crash recovery
+    benchmark: Optional[pd.Series] = None,  # benchmark closes; None → download via yfinance
 ) -> dict:
     """
     Conviction-hold multi-bagger backtest (V5 — no hard stop).
@@ -503,14 +504,18 @@ def run_mb_backtest(
     bench_info: dict = {}
     bench_ticker = BENCHMARK_TICKER.get(market, "^NSEI")
     try:
-        import yfinance as yf
-        bdf = yf.download(bench_ticker, start=start, end=end,
-                          progress=False, auto_adjust=True)
-        if not bdf.empty:
-            bc     = bdf["Close"].squeeze().dropna()
+        if benchmark is not None:
+            bc = benchmark.loc[start_ts:end_ts].dropna()
+        else:
+            import yfinance as yf
+            bdf = yf.download(bench_ticker, start=start, end=end,
+                              progress=False, auto_adjust=True)
+            bc = bdf["Close"].squeeze().dropna() if not bdf.empty else pd.Series(dtype=float)
+        if len(bc) > 1:
             b0, b1 = float(bc.iloc[0]), float(bc.iloc[-1])
             b_tot  = (b1 / b0) - 1
-            b_cagr = (b1 / b0) ** (1 / n_yrs) - 1
+            b_yrs  = max((bc.index[-1] - bc.index[0]).days / 365.25, 0.01)
+            b_cagr = (b1 / b0) ** (1 / b_yrs) - 1
             b_dd   = _max_dd(bc)
             b_sh   = _sharpe(bc.pct_change().dropna())
             b_ann: dict[int, float] = {}

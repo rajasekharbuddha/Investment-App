@@ -3,8 +3,9 @@ run_backtest_multibagger.py
 ===========================
 CLI runner for the multi-bagger backtest from 2008.
 
-Downloads price history starting 2007-06-01 (6 months pre-start to warm up
-indicators), computes SMA_50 / SMA_200, then simulates from 2008-01-01.
+Loads daily closes from data/price_cache/<TICKER>.csv when present, otherwise
+downloads them with yfinance and caches them. Fetches 14 months before the
+start date to warm up SMA_200 and momentum. Cache CSV format: Date,Close.
 
 Usage
 -----
@@ -33,7 +34,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from backtest_multibagger import run_mb_backtest, mb_backtest_report
+from backtest_multibagger import BENCHMARK_TICKER, run_mb_backtest, mb_backtest_report
 
 
 # ── Default universes ─────────────────────────────────────────────────────────
@@ -72,60 +73,52 @@ _UNIVERSE: dict[str, list[str]] = {
 }
 
 
+CACHE_DIR = Path(__file__).resolve().parent.parent / "data" / "price_cache"
+
+
+def _load_closes(ticker: str, fetch_start: str, fetch_end: str) -> pd.Series | None:
+    """Close prices from data/price_cache/<ticker>.csv, else yfinance (then cached)."""
+    path = CACHE_DIR / f"{ticker}.csv"
+    if path.exists():
+        s = pd.read_csv(path, index_col=0, parse_dates=True).iloc[:, 0]
+        if s.index.max() >= pd.Timestamp(fetch_end) - pd.Timedelta(days=5):
+            return s.loc[fetch_start:fetch_end].dropna()
+    try:
+        import yfinance as yf
+        df = yf.download(ticker, start=fetch_start, end=fetch_end,
+                         progress=False, auto_adjust=True)
+    except Exception:
+        return None
+    if df is None or df.empty:
+        return None
+    s = df["Close"].squeeze().dropna()
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    s.rename("Close").to_csv(path)
+    return s
+
+
 def _download_price_data(
     tickers: list[str],
     fetch_start: str,
     fetch_end: str,
 ) -> dict[str, pd.DataFrame]:
-    """
-    Download OHLCV + compute SMA_50 / SMA_200 for each ticker.
-    Returns {ticker: DataFrame} — missing tickers are silently skipped.
-    """
-    try:
-        import yfinance as yf
-    except ImportError:
-        print("  ERROR: yfinance is required.  pip install yfinance")
-        sys.exit(1)
-
+    """{ticker: DataFrame[Close, SMA_50, SMA_200]}; tickers without data are skipped."""
     data_map: dict[str, pd.DataFrame] = {}
-    failed = 0
-
-    print(f"  Downloading {len(tickers)} tickers ({fetch_start} → {fetch_end})...")
-
+    failed: list[str] = []
+    print(f"  Loading {len(tickers)} tickers ({fetch_start} → {fetch_end})...")
     for i, ticker in enumerate(tickers):
-        try:
-            df = yf.download(
-                ticker,
-                start=fetch_start,
-                end=fetch_end,
-                progress=False,
-                auto_adjust=True,
-            )
-            if df is None or df.empty or len(df) < 210:
-                failed += 1
-                continue
-
-            # Flatten MultiIndex columns if present
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
-
-            df = df[["Close"]].copy()
-            df["SMA_50"]  = df["Close"].rolling(50).mean()
-            df["SMA_200"] = df["Close"].rolling(200).mean()
-            df.dropna(subset=["SMA_200"], inplace=True)
-
-            if len(df) > 0:
-                data_map[ticker] = df
-
-        except Exception:
-            failed += 1
-
-        # Brief rate-limit delay
-        if i > 0 and i % 10 == 0:
+        s = _load_closes(ticker, fetch_start, fetch_end)
+        if s is None or len(s) < 210:
+            failed.append(ticker)
+            continue
+        df = pd.DataFrame({"Close": s})
+        df["SMA_50"]  = df["Close"].rolling(50).mean()
+        df["SMA_200"] = df["Close"].rolling(200).mean()
+        df.dropna(subset=["SMA_200"], inplace=True)
+        data_map[ticker] = df
+        if i % 10 == 9:
             time.sleep(0.5)
-            print(f"    {i}/{len(tickers)} done, {failed} failed so far...")
-
-    print(f"  Ready: {len(data_map)} tickers ({failed} failed/skipped)")
+    print(f"  Ready: {len(data_map)} tickers" + (f"  (no data: {', '.join(failed)})" if failed else ""))
     return data_map
 
 
@@ -139,8 +132,9 @@ def main() -> None:
     parser.add_argument("--end",      default=None,   help="Backtest end date (default: today)")
     parser.add_argument("--equity",   type=float, default=100_000, help="Starting capital")
     parser.add_argument("--slots",    type=int,   default=8,       help="Max positions (default: 8)")
-    parser.add_argument("--review",   type=int,   default=63,      help="Entry review interval in days (default: 63)")
-    parser.add_argument("--min-rank", type=float, default=0.40,    help="Entry rank cutoff — bottom X% excluded (default: 0.40)")
+    parser.add_argument("--review",   type=int,   default=21,      help="Entry review interval in days (default: 21)")
+    parser.add_argument("--min-rank", type=float, default=0.10,    help="Entry rank cutoff — bottom X%% excluded (default: 0.10)")
+    parser.add_argument("--stop-loss", type=float, default=0.0,    help="Hard stop below entry (0 = off)")
     parser.add_argument("--no-accel", action="store_true",          help="Disable the acceleration entry filter")
     parser.add_argument("--tickers",  nargs="+",  default=None,     help="Override default universe")
     args = parser.parse_args()
@@ -153,8 +147,8 @@ def main() -> None:
         start_str = f"{start_str}-01-01"
     end_str = args.end or pd.Timestamp.now().strftime("%Y-%m-%d")
 
-    # Download starts 7 months before backtest start to warm up SMA_200
-    fetch_start = (pd.Timestamp(start_str) - pd.DateOffset(months=7)).strftime("%Y-%m-%d")
+    # 14 months of history before the start: SMA_200 needs ~10 months, momentum 3 more
+    fetch_start = (pd.Timestamp(start_str) - pd.DateOffset(months=14)).strftime("%Y-%m-%d")
     fetch_end   = end_str
 
     tickers = args.tickers or _UNIVERSE.get(market, [])
@@ -174,6 +168,9 @@ def main() -> None:
         print("  ERROR: Fewer than 3 tickers have valid price data. Aborting.")
         sys.exit(1)
 
+    bench_ticker = BENCHMARK_TICKER.get(market, "^NSEI")
+    benchmark = _load_closes(bench_ticker, fetch_start, fetch_end)
+
     print(f"\n  Running backtest from {start_str}...")
     result = run_mb_backtest(
         market              = market,
@@ -185,6 +182,8 @@ def main() -> None:
         review_days         = args.review,
         min_entry_rank      = args.min_rank,
         require_acceleration= not args.no_accel,
+        stop_loss           = args.stop_loss,
+        benchmark           = benchmark,
     )
 
     print(mb_backtest_report(result))
