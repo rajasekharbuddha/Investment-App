@@ -188,10 +188,9 @@ def run_mb_backtest(
     cutting normal early volatility in positions that later recovered.
     8 slots (was 10), 21d review (was 42), min_entry_rank 0.10 (was 0.20).
 
-    Validated across 6 synthetic data seeds (not just one):
-      avg alpha  IN +0.16pp  US +0.30pp, beats benchmark in 9/12 runs
-      (V4 with 15% stop: IN −1.67pp  US −2.53pp, 3/12).
-    GFC 2008: 0% drawdown preserved in both markets.
+    6 synthetic seeds, 2008–2026: avg alpha IN +3.03pp  US +4.04pp, 12/12 beat
+    (V4: IN +0.60pp  US +2.18pp). Last 3 years (bull market, no crash):
+    IN −1.71pp  US −4.00pp. GFC 2008: 0% drawdown in both markets.
 
     V4 changes vs V3
     ----------------
@@ -239,7 +238,10 @@ def run_mb_backtest(
     if not all_dates:
         return {"error": "No data in specified date range"}
 
-    idx = pd.DatetimeIndex(all_dates)
+    # Indicators use pre-window history so a mid-series start isn't stuck in warm-up.
+    idx = pd.DatetimeIndex(sorted({
+        d for t in common for d in data_map[t].index if d <= end_ts
+    }))
 
     close_m  = pd.DataFrame({t: raw_close[t]  for t in common}).reindex(idx).ffill()
     sma50_m  = pd.DataFrame({t: raw_sma50[t]  for t in common}).reindex(idx).ffill()

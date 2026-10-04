@@ -256,15 +256,15 @@ def _build_annual_series(
         annual_ret = annual_returns.get(year, 0.08)  # default 8% if unknown
         daily_drift = (1 + annual_ret) ** (1 / max(len(yr_dates), 1)) - 1
 
-        # Generate smooth path with small noise
         rng = np.random.default_rng(seed=year)
         noise = rng.normal(0, 0.01, len(yr_dates))
-        path  = level * np.cumprod(1 + daily_drift + noise)
+        log_path = np.cumsum(np.log1p(daily_drift + noise))
 
-        # Scale so year-end exactly matches the calibrated return
-        target_end = level * (1 + annual_ret)
-        scale      = target_end / path[-1] if path[-1] != 0 else 1.0
-        path       = path * scale
+        # Log-space bridge: hit the calibrated year-end exactly while staying
+        # continuous with the prior year (uniform rescaling caused Jan-1 gaps).
+        t = np.arange(1, len(yr_dates) + 1) / len(yr_dates)
+        log_path -= t * (log_path[-1] - np.log1p(annual_ret))
+        path = level * np.exp(log_path)
 
         prices.loc[yr_dates] = path
         level = float(path[-1])
