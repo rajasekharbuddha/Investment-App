@@ -26,6 +26,21 @@ HOW THIS DIFFERS FROM THE LT MOMENTUM BACKTEST
                 This is how multi-baggers are actually captured: buy good
                 companies in structural tailwinds and hold them.
 
+V2 ENHANCEMENTS (return-improving changes)
+------------------------------------------
+  1. Conviction sizing      — STRONG ideas (top 20% mom + high accel) get 1.5×
+                              the capital allocation of MODERATE ideas.
+  2. Faster crash recovery  — review interval drops from 63d → 21d when the
+                              market proxy recovers from a >20% drawdown.
+  3. Partial profit-taking  — trim 33% of a position when it is up 40%.
+                              Locks in gains; core position keeps running.
+  4. Trailing stop          — exit if price falls >20% from its post-entry peak.
+                              Faster than waiting for SMA breakdown.
+  5. Regime exposure cap    — no new entries when proxy index is below SMA200.
+                              Capital stays in cash until the market confirms
+                              a bull regime.  Existing positions are NOT forced
+                              out — the SMA breakdown handles that.
+
 CRISIS PERIODS COVERED
 ----------------------
   2008–2009  Global Financial Crisis          (worst drawdown period)
@@ -149,45 +164,31 @@ def run_mb_backtest(
     data_map: dict,
     start: str,
     end: str,
-    equity: float           = 100_000,
-    max_positions: int      = 8,
-    review_days: int        = 63,       # periodic review for new entries only
-    commission: float       = 0.001,
-    slippage: float         = 0.001,
-    min_entry_rank: float   = 0.40,     # only enter if in top 40% of universe by momentum
-    require_acceleration: bool = True,  # only enter if short-term > long-term momentum
+    equity: float              = 100_000,
+    max_positions: int         = 8,
+    review_days: int           = 63,
+    commission: float          = 0.001,
+    slippage: float            = 0.001,
+    min_entry_rank: float      = 0.40,
+    require_acceleration: bool = True,
+    # ── V2 enhancement flags ───────────────────────────────────────────────
+    use_conviction_sizing: bool = True,   # STRONG ideas get 1.5× allocation
+    partial_profit_at: float    = 0.40,   # trim at +40% unrealised (0 = off)
+    partial_profit_trim: float  = 0.33,   # fraction to sell at partial event
+    trailing_stop: float        = 0.20,   # exit if 20% below peak (0 = off)
+    regime_scaling: bool        = True,   # no new entries when market < SMA200
+    recovery_fast_review: int   = 21,     # review interval during crash recovery
 ) -> dict:
     """
-    Conviction-hold multi-bagger backtest.
+    Conviction-hold multi-bagger backtest (V2 — enhanced returns).
 
-    Entry conditions (all must pass)
-    ---------------------------------
-    1. Structural gate: SMA_50 > SMA_200, Close > SMA_200, SMA_50 rising 5d
-    2. Top-half momentum across universe (min_entry_rank)
-    3. Acceleration: 14d momentum > 63d momentum (revenue proxy)
-
-    Exit conditions (any triggers exit)
-    ------------------------------------
-    1. Structural gate fails: SMA_50 < SMA_200  (exits next open — immediate)
-       This is the ONLY exit during a hold — we do NOT rotate out for ranking.
-
-    This models the multi-bagger holding philosophy: buy compounders that are
-    in structural uptrends, and hold them until the trend structurally breaks.
-
-    Parameters
-    ----------
-    market              : "IN" | "US" | "EU"
-    data_map            : {ticker: DataFrame with SMA_50, SMA_200, Close}
-    start / end         : "YYYY-MM-DD"
-    equity              : starting capital
-    max_positions       : maximum concurrent holdings (equal weight)
-    review_days         : how often new entries are considered (not exits)
-    min_entry_rank      : exclude bottom X% by momentum at entry (e.g. 0.40 = top 60%)
-    require_acceleration: only enter if short-term momentum > long-term
-
-    Returns
-    -------
-    dict with full performance metrics, equity curve, trades, benchmark
+    V2 changes vs V1
+    ----------------
+    1. Conviction sizing      STRONG (top 20% mom + accel > 0.05) → 1.5× alloc.
+    2. Crash recovery speed   Review interval → 21d when market recovers from >20% DD.
+    3. Partial profit-taking  Trim 33% at +40% unrealised; rest keeps running.
+    4. Trailing stop (20%)    Exit if price falls >20% from post-entry peak.
+    5. Regime cap             No new entries while proxy index < SMA200.
     """
     start_ts = pd.Timestamp(start)
     end_ts   = pd.Timestamp(end)
@@ -220,92 +221,178 @@ def run_mb_backtest(
     accel_m      = _compute_acceleration_score(close_m)
     breakdown_m  = sma50_m < sma200_m
 
+    # ── V2: Market proxy for regime and crash-recovery signals ────────────────
+    proxy_index  = close_m.mean(axis=1)
+    proxy_sma200 = proxy_index.rolling(200, min_periods=50).mean()
+    # Rolling 6-month minimum drawdown from 1-year peak
+    proxy_1yr_max = proxy_index.rolling(252, min_periods=1).max()
+    proxy_dd      = (proxy_index - proxy_1yr_max) / proxy_1yr_max.where(proxy_1yr_max > 0, np.nan)
+    proxy_min_6m  = proxy_dd.rolling(126, min_periods=1).min()
+    # "in crash recovery" = was down >20% within 6 months AND now above SMA200
+    in_bull_m      = proxy_index > proxy_sma200.fillna(proxy_index)
+    in_recovery_m  = (proxy_min_6m < -0.20) & in_bull_m
+
     # ── Simulation ────────────────────────────────────────────────────────────
-    cash         = equity
-    portfolio    = {}          # {ticker: shares}
-    entry_price  = {}          # {ticker: fill price at entry}
-    entry_date   = {}          # {ticker: date of entry}
-    eq_curve     = []
-    trades       = []
-    next_review  = all_dates[0]
+    cash           = equity
+    portfolio      = {}    # {ticker: shares}
+    entry_price    = {}    # {ticker: avg fill price}
+    entry_date     = {}    # {ticker: entry date}
+    peak_price     = {}    # {ticker: highest close since entry}  — for trailing stop
+    partial_taken  = {}    # {ticker: True}  — one partial event per position
+    entry_conv     = {}    # {ticker: 1.0 or 1.5}  — conviction weight at entry
+    eq_curve       = []
+    trades         = []
+    next_review    = all_dates[0]
 
     for date in all_dates:
         prices = close_m.loc[date]
 
-        # ── Exit: structural breakdown (only exit trigger) ────────────────────
+        # ── Update peak prices ────────────────────────────────────────────────
+        for t in list(portfolio.keys()):
+            px = float(prices.get(t, 0))
+            if px > 0:
+                peak_price[t] = max(peak_price.get(t, px), px)
+
+        # ── Exit 1: trailing stop ─────────────────────────────────────────────
+        # Only activate after position has gained >=15% (avoids premature exits
+        # on normal early-hold volatility before the thesis is confirmed).
+        if trailing_stop > 0:
+            for t in list(portfolio.keys()):
+                pk = peak_price.get(t, 0)
+                px = float(prices.get(t, 0))
+                ep = entry_price.get(t, 0)
+                gain = (px / ep - 1) if ep > 0 else 0
+                if pk > 0 and px > 0 and gain >= 0.15 and px < pk * (1 - trailing_stop):
+                    shares = portfolio.pop(t)
+                    ep     = entry_price.pop(t, 0)
+                    ed     = entry_date.pop(t, date)
+                    peak_price.pop(t, None)
+                    partial_taken.pop(t, None)
+                    entry_conv.pop(t, None)
+                    fill   = px * (1 - slippage)
+                    cash  += shares * fill * (1 - commission)
+                    pnl    = (fill * (1 - commission) - ep) * shares
+                    trades.append({
+                        "date": date, "action": "SELL", "ticker": t,
+                        "shares": shares, "price": px, "entry_price": ep,
+                        "pnl": pnl, "hold_days": (date - ed).days,
+                        "reason": "trailing_stop",
+                    })
+
+        # ── Exit 2: structural breakdown ──────────────────────────────────────
         bd_row = breakdown_m.loc[date]
         for t in list(portfolio.keys()):
             if bd_row.get(t, False):
                 shares = portfolio.pop(t)
                 ep     = entry_price.pop(t, 0)
                 ed     = entry_date.pop(t, date)
+                peak_price.pop(t, None)
+                partial_taken.pop(t, None)
+                entry_conv.pop(t, None)
                 px     = float(prices.get(t, 0))
                 fill   = px * (1 - slippage)
                 cash  += shares * fill * (1 - commission)
                 pnl    = (fill * (1 - commission) - ep) * shares
                 trades.append({
-                    "date":        date,
-                    "action":      "SELL",
-                    "ticker":      t,
-                    "shares":      shares,
-                    "price":       px,
-                    "entry_price": ep,
-                    "pnl":         pnl,
-                    "hold_days":   (date - ed).days,
-                    "reason":      "breakdown",
+                    "date": date, "action": "SELL", "ticker": t,
+                    "shares": shares, "price": px, "entry_price": ep,
+                    "pnl": pnl, "hold_days": (date - ed).days,
+                    "reason": "breakdown",
                 })
 
-        # ── Periodic review: look for new entries ─────────────────────────────
-        if date >= next_review and len(portfolio) < max_positions:
-            mom_today   = mom_m.loc[date].dropna()
-            accel_today = accel_m.loc[date].dropna()
-
-            n_slots = max_positions - len(portfolio)
-            if n_slots > 0 and len(mom_today) > 0:
-                # Rank threshold: top (1 - min_entry_rank) by momentum
-                rank_cut = mom_today.quantile(min_entry_rank)
-
-                candidates = [
-                    t for t in mom_today.index
-                    if t not in portfolio
-                    and structural_m.loc[date].get(t, False)
-                    and mom_today[t] >= rank_cut
-                    and (
-                        not require_acceleration
-                        or (t in accel_today and _ok(accel_today[t]) and accel_today[t] > 0)
-                    )
-                ]
-
-                # Sort by momentum score (best first)
-                candidates.sort(key=lambda t: mom_today.get(t, 0), reverse=True)
-
-                # Size: divide remaining equity equally across free slots
-                held_val   = sum(portfolio[t] * float(prices.get(t, 0)) for t in portfolio)
-                curr_eq    = cash + held_val
-                alloc_each = curr_eq / max_positions
-
-                for t in candidates[:n_slots]:
-                    px   = float(prices.get(t, 0))
-                    if px <= 0:
-                        continue
-                    fill   = px * (1 + slippage)
-                    shares = math.floor(alloc_each / (fill * (1 + commission)))
-                    cost   = shares * fill * (1 + commission)
-                    if shares > 0 and cost <= cash:
-                        cash -= cost
-                        portfolio[t]   = portfolio.get(t, 0) + shares
-                        entry_price[t] = fill * (1 + commission) / shares if shares > 0 else fill
-                        entry_date[t]  = date
+        # ── Partial profit-taking ─────────────────────────────────────────────
+        if partial_profit_at > 0:
+            for t in list(portfolio.keys()):
+                if partial_taken.get(t, False):
+                    continue
+                ep = entry_price.get(t, 0)
+                px = float(prices.get(t, 0))
+                if ep > 0 and px > 0 and (px / ep - 1) >= partial_profit_at:
+                    shares_held  = portfolio[t]
+                    shares_trim  = math.floor(shares_held * partial_profit_trim)
+                    if shares_trim >= 1:
+                        fill     = px * (1 - slippage)
+                        proceeds = shares_trim * fill * (1 - commission)
+                        pnl      = (fill * (1 - commission) - ep) * shares_trim
+                        cash    += proceeds
+                        portfolio[t] -= shares_trim
+                        partial_taken[t] = True
                         trades.append({
-                            "date":   date,
-                            "action": "BUY",
-                            "ticker": t,
-                            "shares": shares,
-                            "price":  px,
-                            "reason": "entry",
+                            "date": date, "action": "SELL_PARTIAL", "ticker": t,
+                            "shares": shares_trim, "price": px, "entry_price": ep,
+                            "pnl": pnl, "hold_days": (date - entry_date.get(t, date)).days,
+                            "reason": "partial_profit",
                         })
 
-            next_review = date + pd.Timedelta(days=review_days)
+        # ── Periodic review: look for new entries ─────────────────────────────
+        date_in_bull     = bool(in_bull_m.get(date, True))
+        date_in_recovery = bool(in_recovery_m.get(date, False))
+        # Faster review if crash recovery; skip new entries in bear regime
+        effective_review = recovery_fast_review if date_in_recovery else review_days
+
+        if date >= next_review and len(portfolio) < max_positions:
+            # Regime cap: don't add new positions in bear regime
+            if not regime_scaling or date_in_bull or date_in_recovery:
+                mom_today   = mom_m.loc[date].dropna()
+                accel_today = accel_m.loc[date].dropna()
+                n_slots = max_positions - len(portfolio)
+
+                if n_slots > 0 and len(mom_today) > 0:
+                    rank_cut      = mom_today.quantile(min_entry_rank)
+                    strong_cut    = mom_today.quantile(0.80)  # top 20% = STRONG
+
+                    candidates = [
+                        t for t in mom_today.index
+                        if t not in portfolio
+                        and structural_m.loc[date].get(t, False)
+                        and mom_today[t] >= rank_cut
+                        and (
+                            not require_acceleration
+                            or (t in accel_today and _ok(accel_today[t]) and accel_today[t] > 0)
+                        )
+                    ]
+                    candidates.sort(key=lambda t: mom_today.get(t, 0), reverse=True)
+
+                    held_val  = sum(portfolio[t] * float(prices.get(t, 0)) for t in portfolio)
+                    curr_eq   = cash + held_val
+                    base_alloc = curr_eq / max_positions   # one equal slot
+
+                    for t in candidates[:n_slots]:
+                        px = float(prices.get(t, 0))
+                        if px <= 0:
+                            continue
+
+                        # Conviction weight: STRONG (1.5×) or MODERATE (1.0×)
+                        if use_conviction_sizing:
+                            is_strong = (
+                                mom_today[t] >= strong_cut
+                                and t in accel_today
+                                and _ok(accel_today[t])
+                                and accel_today[t] >= 0.05
+                            )
+                            cw = 1.5 if is_strong else 1.0
+                        else:
+                            cw = 1.0
+
+                        alloc  = base_alloc * cw
+                        fill   = px * (1 + slippage)
+                        shares = math.floor(alloc / (fill * (1 + commission)))
+                        cost   = shares * fill * (1 + commission)
+                        if shares > 0 and cost <= cash:
+                            cash -= cost
+                            portfolio[t]   = portfolio.get(t, 0) + shares
+                            entry_price[t] = fill * (1 + commission)   # per-share cost
+                            entry_date[t]  = date
+                            peak_price[t]  = px
+                            entry_conv[t]  = cw
+                            trades.append({
+                                "date": date, "action": "BUY", "ticker": t,
+                                "shares": shares, "price": px,
+                                "conviction": "STRONG" if cw > 1.0 else "MODERATE",
+                                "reason": "entry",
+                            })
+
+            next_review = date + pd.Timedelta(days=effective_review)
 
         # Mark to market
         port_val = sum(portfolio[t] * float(prices.get(t, 0)) for t in portfolio)
@@ -325,7 +412,7 @@ def run_mb_backtest(
     sortino   = _sortino(daily_ret)
     calmar    = _calmar(cagr, max_dd)
 
-    sell_trades = [t for t in trades if t["action"] == "SELL"]
+    sell_trades = [t for t in trades if t["action"] in ("SELL", "SELL_PARTIAL")]
     buy_trades  = [t for t in trades if t["action"] == "BUY"]
 
     hold_days_list = [t["hold_days"] for t in sell_trades if "hold_days" in t]
@@ -421,6 +508,10 @@ def run_mb_backtest(
         "n_buys":               len(buy_trades),
         "n_sells":              len(sell_trades),
         "n_breakdown":          sum(1 for t in sell_trades if t.get("reason") == "breakdown"),
+        "n_trailing_stop":      sum(1 for t in sell_trades if t.get("reason") == "trailing_stop"),
+        "n_partial_profit":     sum(1 for t in sell_trades if t.get("reason") == "partial_profit"),
+        "n_strong_entries":     sum(1 for t in buy_trades if t.get("conviction") == "STRONG"),
+        "n_moderate_entries":   sum(1 for t in buy_trades if t.get("conviction") == "MODERATE"),
         "avg_hold_days":        avg_hold,
         "median_hold_days":     median_hold,
         "win_rate":             win_rate,
@@ -504,7 +595,7 @@ def mb_backtest_report(r: dict) -> str:
         f"\033[1m\033[94m{SEP}\033[0m",
         f"\033[1m\033[97m  MULTI-BAGGER BACKTEST  ──  {r['market']}   "
         f"({r['start']} → {r['end']})\033[0m",
-        f"\033[94m  Strategy: Conviction-hold · Exit only on SMA breakdown\033[0m",
+        f"\033[94m  Strategy: Conviction-hold V2 · trailing stop + partial profits + regime gate\033[0m",
         f"\033[94m  Entry: structural gate + top {round((1-r['min_entry_rank'])*100):.0f}% momentum"
         f" + acceleration filter\033[0m",
         f"\033[1m\033[94m{SEP}\033[0m",
@@ -522,7 +613,10 @@ def mb_backtest_report(r: dict) -> str:
         f"  {'Calmar ratio':<26}  \033[97m{r['calmar']:>14.3f}\033[0m",
         "",
         f"  {'Trades (buy / sell)':<26}  \033[97m{r['n_buys']:>6} / {r['n_sells']:<6}\033[0m",
-        f"  {'Breakdown exits':<26}  \033[91m{r['n_breakdown']:>14}\033[0m",
+        f"  {'  ↳ SMA breakdown exits':<26}  \033[91m{r['n_breakdown']:>14}\033[0m",
+        f"  {'  ↳ Trailing stop exits':<26}  \033[93m{r.get('n_trailing_stop',0):>14}\033[0m",
+        f"  {'  ↳ Partial profit trims':<26}  \033[92m{r.get('n_partial_profit',0):>14}\033[0m",
+        f"  {'  ↳ STRONG / MODERATE buys':<26}  \033[97m{r.get('n_strong_entries',0):>5} / {r.get('n_moderate_entries',0):<8}\033[0m",
         f"  {'Avg hold duration':<26}  "
         + (f"\033[97m{r['avg_hold_days']:.0f} days\033[0m" if r.get('avg_hold_days') else "  N/A"),
         f"  {'Median hold duration':<26}  "
